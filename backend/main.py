@@ -13,7 +13,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from auth import ADMIN_EMAIL, create_jwt, get_user_for_login, hash_password, seed_users_from_env, verify_jwt
-from database import Device, GROUPS, LocalUser, create_tables, get_db
+from database import Device, GROUPS, LocalUser, SessionLocal, create_tables, get_db
 from sophos import SophosAPI, mac_to_host_name, normalize_mac
 
 app = FastAPI(title="NetGuard")
@@ -414,7 +414,7 @@ def delete_device(device_id: int, background_tasks: BackgroundTasks, db: Session
 
 
 @router.patch("/devices/{device_id}/toggle", response_model=DeviceOut)
-def toggle_device(device_id: int, db: Session = Depends(get_db), _=Depends(current_user)):
+def toggle_device(device_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db), _=Depends(current_user)):
     check_sophos_or_raise()
 
     device = db.query(Device).filter(Device.id == device_id).first()
@@ -422,22 +422,36 @@ def toggle_device(device_id: int, db: Session = Depends(get_db), _=Depends(curre
         raise HTTPException(status_code=404, detail="Device not found")
 
     new_state = not device.is_enabled
+
+    # Save to DB immediately — page refresh always shows correct state
+    device.is_enabled = new_state
+    db.commit()
+    db.refresh(device)
+
     host_name = device.sophos_host_name
     rule = firewall_rule()
 
-    try:
-        if new_state:
-            sophos().add_to_rule(rule, host_name)
-        else:
-            sophos().remove_from_rule(rule, host_name)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+    def _sync():
+        try:
+            if new_state:
+                sophos().add_to_rule(rule, host_name)
+            else:
+                sophos().remove_from_rule(rule, host_name)
+        except Exception as e:
+            traceback.print_exc()
+            print(f"[bg] Sophos sync failed for {host_name}: {e}")
+            # Revert DB since Sophos failed
+            sync_db = SessionLocal()
+            try:
+                d = sync_db.query(Device).filter(Device.id == device_id).first()
+                if d and d.is_enabled == new_state:
+                    d.is_enabled = not new_state
+                    sync_db.commit()
+                    print(f"[bg] DB reverted for {host_name}")
+            finally:
+                sync_db.close()
 
-    device.is_enabled = new_state
-    device.sophos_synced = True
-    db.commit()
-    db.refresh(device)
+    background_tasks.add_task(_sync)
     return device
 
 
