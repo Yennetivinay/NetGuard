@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import api from '../api'
 import DeviceCard from './DeviceCard'
@@ -15,8 +15,7 @@ export default function Dashboard({ user, onLogout }) {
   const [editDevice, setEditDevice] = useState(null)
   const [search, setSearch] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
-  const [errorBanner, setErrorBanner] = useState(null)
-  const bannerTimer = useRef(null)
+  const [sophosConnected, setSophosConnected] = useState(true)
 
   const fetchDevices = async () => {
     try {
@@ -29,22 +28,21 @@ export default function Dashboard({ user, onLogout }) {
     }
   }
 
-  useEffect(() => { fetchDevices() }, [])
-
-  const showError = (e) => {
-    if (bannerTimer.current) clearTimeout(bannerTimer.current)
-    const status = e?.response?.status
-    const detail = e?.response?.data?.detail
-    const serverMsg = typeof detail === 'string' ? detail : null
-    let msg
-    if (!e?.response) msg = 'Backend server is unreachable — check the server is running'
-    else if (status === 503) msg = 'Firewall is not connected — operation was not applied'
-    else if (status === 502) msg = serverMsg || 'Firewall operation failed'
-    else if (status === 500) msg = 'Server error — please try again'
-    else msg = serverMsg || 'Operation failed — changes were not saved'
-    setErrorBanner(msg)
-    bannerTimer.current = setTimeout(() => setErrorBanner(null), 7000)
+  const checkSophos = async () => {
+    try {
+      const { data } = await api.get('/sophos/status')
+      setSophosConnected(data.connected)
+    } catch {
+      setSophosConnected(false)
+    }
   }
+
+  useEffect(() => {
+    fetchDevices()
+    checkSophos()
+    const interval = setInterval(checkSophos, 30000)
+    return () => clearInterval(interval)
+  }, [])
 
   const extractError = (e, fallback) => {
     const detail = e.response?.data?.detail
@@ -58,55 +56,55 @@ export default function Dashboard({ user, onLogout }) {
     try {
       const { data } = await api.post('/devices', form)
       setDevices((d) => [data, ...d])
-      setErrorBanner(null)
       toast.success(`${data.name} added to Sophos`)
       return null
     } catch (e) {
-      showError(e)
-      return extractError(e, 'Failed to add device')
+      const msg = extractError(e, 'Failed to add device')
+      toast.error(msg)
+      return msg
     }
   }
 
   const handleToggle = async (id) => {
     const device = devices.find((d) => d.id === id)
-    setDevices((ds) => ds.map((d) => d.id === id ? { ...d, is_enabled: !d.is_enabled } : d))
+    const newState = !device.is_enabled
+    // Flip instantly in UI, sync with server in background
+    setDevices((ds) => ds.map((d) => d.id === id ? { ...d, is_enabled: newState } : d))
     try {
       const { data } = await api.patch(`/devices/${id}/toggle`)
       setDevices((ds) => ds.map((d) => d.id === id ? data : d))
-      setErrorBanner(null)
       toast.success(data.is_enabled ? `${device.name}: Internet ON` : `${device.name}: Internet OFF`)
     } catch (e) {
+      // Revert on failure
       setDevices((ds) => ds.map((d) => d.id === id ? device : d))
-      showError(e)
+      toast.error(extractError(e, 'Toggle failed'))
     }
   }
 
   const handleEdit = async (id, form) => {
-    const device = devices.find((d) => d.id === id)
-    setDevices((ds) => ds.map((d) => d.id === id ? { ...d, ...form } : d))
     try {
       const { data } = await api.patch(`/devices/${id}`, form)
       setDevices((ds) => ds.map((d) => d.id === id ? data : d))
-      setErrorBanner(null)
       toast.success(`${data.name} updated in Sophos`)
       return null
     } catch (e) {
-      setDevices((ds) => ds.map((d) => d.id === id ? device : d))
-      showError(e)
-      return extractError(e, 'Failed to update device')
+      const msg = extractError(e, 'Failed to update device')
+      toast.error(msg)
+      return msg
     }
   }
 
   const handleDelete = async (id) => {
     const device = devices.find((d) => d.id === id)
+    // Remove instantly from UI, sync with server in background
     setDevices((ds) => ds.filter((d) => d.id !== id))
     try {
       await api.delete(`/devices/${id}`)
-      setErrorBanner(null)
       toast.success(`${device.name} removed`)
     } catch (e) {
+      // Revert on failure
       setDevices((ds) => [device, ...ds])
-      showError(e)
+      toast.error(extractError(e, 'Delete failed'))
     }
   }
 
@@ -203,13 +201,10 @@ export default function Dashboard({ user, onLogout }) {
         )}
       </header>
 
-      {errorBanner && (
-        <div className="bg-red-600 text-white text-sm px-4 py-2.5 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-white animate-pulse flex-shrink-0" />
-            {errorBanner}
-          </div>
-          <button onClick={() => setErrorBanner(null)} className="text-white hover:text-red-200 font-bold text-lg leading-none flex-shrink-0">×</button>
+      {!sophosConnected && (
+        <div className="bg-red-600 text-white text-sm px-4 py-2.5 flex items-center gap-2 justify-center">
+          <span className="w-2 h-2 rounded-full bg-white animate-pulse flex-shrink-0" />
+          Sophos firewall is unreachable — changes are queued and will sync automatically when connection is restored.
         </div>
       )}
 
@@ -241,8 +236,10 @@ export default function Dashboard({ user, onLogout }) {
           />
           {isAdmin && (
             <button
-              onClick={() => setShowAdd(true)}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-5 py-2 sm:py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap"
+              onClick={() => sophosConnected && setShowAdd(true)}
+              disabled={!sophosConnected}
+              title={!sophosConnected ? 'Firewall not connected' : ''}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-5 py-2 sm:py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <span className="text-lg leading-none">+</span>
               <span className="hidden xs:inline sm:inline">Add Device</span>
@@ -290,6 +287,7 @@ export default function Dashboard({ user, onLogout }) {
                 onEdit={setEditDevice}
                 onDelete={handleDelete}
                 isAdmin={isAdmin}
+                sophosConnected={sophosConnected}
               />
             ))}
           </div>
