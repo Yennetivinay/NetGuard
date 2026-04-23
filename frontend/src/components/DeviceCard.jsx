@@ -20,7 +20,7 @@ function Toggle({ enabled, onChange, disabled }) {
   )
 }
 
-export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin, sophosConnected }) {
+export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin }) {
   const [toggling, setToggling] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -70,12 +70,7 @@ export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin
             <p className="text-gray-500 text-xs sm:text-sm truncate mt-0.5">{device.description}</p>
           )}
         </div>
-        <Toggle
-          enabled={device.is_enabled}
-          onChange={handleToggle}
-          disabled={toggling || !sophosConnected}
-          title={!sophosConnected ? 'Firewall not connected' : ''}
-        />
+        <Toggle enabled={device.is_enabled} onChange={handleToggle} disabled={toggling} />
       </div>
 
       {/* MAC display */}
@@ -109,22 +104,19 @@ export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin
           {isAdmin && (
             <>
               <button
-                onClick={() => sophosConnected && onEdit(device)}
-                disabled={!sophosConnected}
-                title={!sophosConnected ? 'Firewall not connected' : ''}
-                className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                onClick={() => onEdit(device)}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium"
               >
                 Edit
               </button>
               <button
                 onClick={handleDelete}
-                disabled={deleting || !sophosConnected}
-                title={!sophosConnected ? 'Firewall not connected' : ''}
+                disabled={deleting}
                 className={`text-xs px-2.5 py-1.5 rounded-lg transition-colors font-medium ${
                   confirmDelete
                     ? 'bg-red-500 text-white hover:bg-red-600'
                     : 'bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-500'
-                } ${(deleting || !sophosConnected) ? 'opacity-40 cursor-not-allowed' : ''}`}
+                } ${deleting ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 {deleting ? '...' : confirmDelete ? 'Confirm?' : 'Delete'}
               </button>

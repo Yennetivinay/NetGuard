@@ -15,7 +15,6 @@ export default function Dashboard({ user, onLogout }) {
   const [editDevice, setEditDevice] = useState(null)
   const [search, setSearch] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
-  const [sophosConnected, setSophosConnected] = useState(true)
 
   const fetchDevices = async () => {
     try {
@@ -28,21 +27,7 @@ export default function Dashboard({ user, onLogout }) {
     }
   }
 
-  const checkSophos = async () => {
-    try {
-      const { data } = await api.get('/sophos/status')
-      setSophosConnected(data.connected)
-    } catch {
-      setSophosConnected(false)
-    }
-  }
-
-  useEffect(() => {
-    fetchDevices()
-    checkSophos()
-    const interval = setInterval(checkSophos, 30000)
-    return () => clearInterval(interval)
-  }, [])
+  useEffect(() => { fetchDevices() }, [])
 
   const extractError = (e, fallback) => {
     const detail = e.response?.data?.detail
@@ -201,13 +186,6 @@ export default function Dashboard({ user, onLogout }) {
         )}
       </header>
 
-      {!sophosConnected && (
-        <div className="bg-red-600 text-white text-sm px-4 py-2.5 flex items-center gap-2 justify-center">
-          <span className="w-2 h-2 rounded-full bg-white animate-pulse flex-shrink-0" />
-          Sophos firewall is not connected — all operations are blocked until connection is restored.
-        </div>
-      )}
-
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
         {/* Stats */}
         <div className="grid grid-cols-3 gap-2 sm:gap-4 mb-4 sm:mb-6">
@@ -236,10 +214,8 @@ export default function Dashboard({ user, onLogout }) {
           />
           {isAdmin && (
             <button
-              onClick={() => sophosConnected && setShowAdd(true)}
-              disabled={!sophosConnected}
-              title={!sophosConnected ? 'Firewall not connected' : ''}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-5 py-2 sm:py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick={() => setShowAdd(true)}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-5 py-2 sm:py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap"
             >
               <span className="text-lg leading-none">+</span>
               <span className="hidden xs:inline sm:inline">Add Device</span>
@@ -287,7 +263,6 @@ export default function Dashboard({ user, onLogout }) {
                 onEdit={setEditDevice}
                 onDelete={handleDelete}
                 isAdmin={isAdmin}
-                sophosConnected={sophosConnected}
               />
             ))}
           </div>
