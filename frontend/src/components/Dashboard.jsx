@@ -15,6 +15,7 @@ export default function Dashboard({ user, onLogout }) {
   const [editDevice, setEditDevice] = useState(null)
   const [search, setSearch] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
+  const [sophosError, setSophosError] = useState(false)
 
   const fetchDevices = async () => {
     try {
@@ -29,6 +30,11 @@ export default function Dashboard({ user, onLogout }) {
 
   useEffect(() => { fetchDevices() }, [])
 
+  const showSophosError = () => {
+    setSophosError(true)
+    setTimeout(() => setSophosError(false), 6000)
+  }
+
   const extractError = (e, fallback) => {
     const detail = e.response?.data?.detail
     if (!detail) return fallback
@@ -41,28 +47,28 @@ export default function Dashboard({ user, onLogout }) {
     try {
       const { data } = await api.post('/devices', form)
       setDevices((d) => [data, ...d])
+      setSophosError(false)
       toast.success(`${data.name} added to Sophos`)
       return null
     } catch (e) {
       const msg = extractError(e, 'Failed to add device')
-      toast.error(msg)
+      if (e.response?.status === 503) showSophosError()
+      else toast.error(msg)
       return msg
     }
   }
 
   const handleToggle = async (id) => {
     const device = devices.find((d) => d.id === id)
-    const newState = !device.is_enabled
-    // Flip instantly in UI, sync with server in background
-    setDevices((ds) => ds.map((d) => d.id === id ? { ...d, is_enabled: newState } : d))
+    setDevices((ds) => ds.map((d) => d.id === id ? { ...d, is_enabled: !d.is_enabled } : d))
     try {
       const { data } = await api.patch(`/devices/${id}/toggle`)
       setDevices((ds) => ds.map((d) => d.id === id ? data : d))
+      setSophosError(false)
       toast.success(data.is_enabled ? `${device.name}: Internet ON` : `${device.name}: Internet OFF`)
     } catch (e) {
-      // Revert on failure
       setDevices((ds) => ds.map((d) => d.id === id ? device : d))
-      toast.error(extractError(e, 'Toggle failed'))
+      showSophosError()
     }
   }
 
@@ -81,15 +87,14 @@ export default function Dashboard({ user, onLogout }) {
 
   const handleDelete = async (id) => {
     const device = devices.find((d) => d.id === id)
-    // Remove instantly from UI, sync with server in background
     setDevices((ds) => ds.filter((d) => d.id !== id))
     try {
       await api.delete(`/devices/${id}`)
+      setSophosError(false)
       toast.success(`${device.name} removed`)
     } catch (e) {
-      // Revert on failure
       setDevices((ds) => [device, ...ds])
-      toast.error(extractError(e, 'Delete failed'))
+      showSophosError()
     }
   }
 
@@ -185,6 +190,16 @@ export default function Dashboard({ user, onLogout }) {
           </div>
         )}
       </header>
+
+      {sophosError && (
+        <div className="bg-red-600 text-white text-sm px-4 py-2.5 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-white animate-pulse flex-shrink-0" />
+            Firewall is not connected — operation was not applied. Please try again later.
+          </div>
+          <button onClick={() => setSophosError(false)} className="text-white hover:text-red-200 font-bold text-lg leading-none">×</button>
+        </div>
+      )}
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
         {/* Stats */}

@@ -404,28 +404,30 @@ def delete_device(device_id: int, background_tasks: BackgroundTasks, db: Session
 
 
 @router.patch("/devices/{device_id}/toggle", response_model=DeviceOut)
-def toggle_device(device_id: int, db: Session = Depends(get_db), _=Depends(current_user)):
+def toggle_device(device_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db), _=Depends(current_user)):
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
     new_state = not device.is_enabled
-    host_name = device.sophos_host_name
-    rule = firewall_rule()
-
-    # Sophos first — only save to DB if it succeeds
-    try:
-        if new_state:
-            sophos().add_to_rule(rule, host_name)
-        else:
-            sophos().remove_from_rule(rule, host_name)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=503, detail=f"Firewall not connected — {e}")
-
     device.is_enabled = new_state
     db.commit()
     db.refresh(device)
+
+    host_name = device.sophos_host_name
+    rule = firewall_rule()
+
+    def _sync():
+        try:
+            if new_state:
+                sophos().add_to_rule(rule, host_name)
+            else:
+                sophos().remove_from_rule(rule, host_name)
+        except Exception as e:
+            traceback.print_exc()
+            print(f"[bg] Sophos sync failed for {host_name}: {e}")
+
+    background_tasks.add_task(_sync)
     return device
 
 
