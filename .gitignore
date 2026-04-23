@@ -1,0 +1,21 @@
+# Environment
+.env
+backend/.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Database
+*.db
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Claude Code (local IDE settings)
+.claude/
