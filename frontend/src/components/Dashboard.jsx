@@ -204,7 +204,7 @@ export default function Dashboard({ user, onLogout }) {
       {!sophosConnected && (
         <div className="bg-red-600 text-white text-sm px-4 py-2.5 flex items-center gap-2 justify-center">
           <span className="w-2 h-2 rounded-full bg-white animate-pulse flex-shrink-0" />
-          Sophos firewall is not connected — all operations are blocked until connection is restored.
+          Sophos firewall is unreachable — changes are queued and will sync automatically when connection is restored.
         </div>
       )}
 
