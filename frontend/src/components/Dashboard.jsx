@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import api from '../api'
 import DeviceCard from './DeviceCard'
@@ -15,7 +15,8 @@ export default function Dashboard({ user, onLogout }) {
   const [editDevice, setEditDevice] = useState(null)
   const [search, setSearch] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
-  const [sophosError, setSophosError] = useState(false)
+  const [errorBanner, setErrorBanner] = useState(null)
+  const bannerTimer = useRef(null)
 
   const fetchDevices = async () => {
     try {
@@ -30,9 +31,19 @@ export default function Dashboard({ user, onLogout }) {
 
   useEffect(() => { fetchDevices() }, [])
 
-  const showSophosError = () => {
-    setSophosError(true)
-    setTimeout(() => setSophosError(false), 6000)
+  const showError = (e) => {
+    if (bannerTimer.current) clearTimeout(bannerTimer.current)
+    const status = e?.response?.status
+    const detail = e?.response?.data?.detail
+    const serverMsg = typeof detail === 'string' ? detail : null
+    let msg
+    if (!e?.response) msg = 'Backend server is unreachable — check the server is running'
+    else if (status === 503) msg = 'Firewall is not connected — operation was not applied'
+    else if (status === 502) msg = serverMsg || 'Firewall operation failed'
+    else if (status === 500) msg = 'Server error — please try again'
+    else msg = serverMsg || 'Operation failed — changes were not saved'
+    setErrorBanner(msg)
+    bannerTimer.current = setTimeout(() => setErrorBanner(null), 7000)
   }
 
   const extractError = (e, fallback) => {
@@ -47,14 +58,12 @@ export default function Dashboard({ user, onLogout }) {
     try {
       const { data } = await api.post('/devices', form)
       setDevices((d) => [data, ...d])
-      setSophosError(false)
+      setErrorBanner(null)
       toast.success(`${data.name} added to Sophos`)
       return null
     } catch (e) {
-      const msg = extractError(e, 'Failed to add device')
-      if (e.response?.status === 503) showSophosError()
-      else toast.error(msg)
-      return msg
+      showError(e)
+      return extractError(e, 'Failed to add device')
     }
   }
 
@@ -64,24 +73,27 @@ export default function Dashboard({ user, onLogout }) {
     try {
       const { data } = await api.patch(`/devices/${id}/toggle`)
       setDevices((ds) => ds.map((d) => d.id === id ? data : d))
-      setSophosError(false)
+      setErrorBanner(null)
       toast.success(data.is_enabled ? `${device.name}: Internet ON` : `${device.name}: Internet OFF`)
     } catch (e) {
       setDevices((ds) => ds.map((d) => d.id === id ? device : d))
-      showSophosError()
+      showError(e)
     }
   }
 
   const handleEdit = async (id, form) => {
+    const device = devices.find((d) => d.id === id)
+    setDevices((ds) => ds.map((d) => d.id === id ? { ...d, ...form } : d))
     try {
       const { data } = await api.patch(`/devices/${id}`, form)
       setDevices((ds) => ds.map((d) => d.id === id ? data : d))
+      setErrorBanner(null)
       toast.success(`${data.name} updated in Sophos`)
       return null
     } catch (e) {
-      const msg = extractError(e, 'Failed to update device')
-      toast.error(msg)
-      return msg
+      setDevices((ds) => ds.map((d) => d.id === id ? device : d))
+      showError(e)
+      return extractError(e, 'Failed to update device')
     }
   }
 
@@ -90,11 +102,11 @@ export default function Dashboard({ user, onLogout }) {
     setDevices((ds) => ds.filter((d) => d.id !== id))
     try {
       await api.delete(`/devices/${id}`)
-      setSophosError(false)
+      setErrorBanner(null)
       toast.success(`${device.name} removed`)
     } catch (e) {
       setDevices((ds) => [device, ...ds])
-      showSophosError()
+      showError(e)
     }
   }
 
@@ -191,13 +203,13 @@ export default function Dashboard({ user, onLogout }) {
         )}
       </header>
 
-      {sophosError && (
+      {errorBanner && (
         <div className="bg-red-600 text-white text-sm px-4 py-2.5 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-white animate-pulse flex-shrink-0" />
-            Firewall is not connected — operation was not applied. Please try again later.
+            {errorBanner}
           </div>
-          <button onClick={() => setSophosError(false)} className="text-white hover:text-red-200 font-bold text-lg leading-none">×</button>
+          <button onClick={() => setErrorBanner(null)} className="text-white hover:text-red-200 font-bold text-lg leading-none flex-shrink-0">×</button>
         </div>
       )}
 
