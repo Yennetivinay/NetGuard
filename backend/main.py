@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 import traceback
 from datetime import datetime
 from typing import List, Optional
@@ -28,6 +29,39 @@ app.add_middleware(
 
 create_tables()
 seed_users_from_env()
+
+
+async def _sophos_sync_loop():
+    """Every 30 seconds retry syncing any devices that failed to update Sophos."""
+    await asyncio.sleep(15)  # wait for backend to fully start
+    while True:
+        try:
+            db = SessionLocal()
+            unsynced = db.query(Device).filter(Device.sophos_synced == False).all()
+            if unsynced:
+                api = sophos()
+                rule = firewall_rule()
+                for device in unsynced:
+                    try:
+                        if device.is_enabled:
+                            api.add_to_rule(rule, device.sophos_host_name)
+                        else:
+                            api.remove_from_rule(rule, device.sophos_host_name)
+                        device.sophos_synced = True
+                        db.commit()
+                        print(f"[sync] Synced {device.name} to Sophos")
+                    except Exception as e:
+                        print(f"[sync] Still failing for {device.name}: {e}")
+        except Exception as e:
+            print(f"[sync] Loop error: {e}")
+        finally:
+            db.close()
+        await asyncio.sleep(30)
+
+
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(_sophos_sync_loop())
 
 # Two routers — one plain, one under /api — so both path styles work
 router = APIRouter()
@@ -220,6 +254,7 @@ class DeviceOut(BaseModel):
     description: str
     group: str
     is_enabled: bool
+    sophos_synced: bool
     sophos_host_name: str
     created_at: datetime
 
@@ -424,9 +459,27 @@ def toggle_device(device_id: int, background_tasks: BackgroundTasks, db: Session
                 api.add_to_rule(rule, host_name)
             else:
                 api.remove_from_rule(rule, host_name)
+            # Mark synced on success
+            sync_db = SessionLocal()
+            try:
+                d = sync_db.query(Device).filter(Device.id == device_id).first()
+                if d:
+                    d.sophos_synced = True
+                    sync_db.commit()
+            finally:
+                sync_db.close()
         except Exception as e:
             traceback.print_exc()
             print(f"[bg] Sophos sync failed for {host_name}: {e}")
+            # Mark unsynced so retry loop picks it up
+            sync_db = SessionLocal()
+            try:
+                d = sync_db.query(Device).filter(Device.id == device_id).first()
+                if d:
+                    d.sophos_synced = False
+                    sync_db.commit()
+            finally:
+                sync_db.close()
 
     background_tasks.add_task(_sync)
     return device
@@ -435,6 +488,16 @@ def toggle_device(device_id: int, background_tasks: BackgroundTasks, db: Session
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/sophos/status")
+def sophos_status(_=Depends(current_user)):
+    try:
+        api = sophos()
+        api._request("<Get><MACHost></MACHost></Get>", timeout=5)
+        return {"connected": True}
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
 
 
 @app.get("/sophos/test")

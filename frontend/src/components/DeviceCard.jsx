@@ -89,12 +89,19 @@ export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin
 
       {/* Footer */}
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full ${
-          device.is_enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-        }`}>
-          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${device.is_enabled ? 'bg-green-500' : 'bg-gray-400'}`} />
-          {device.is_enabled ? 'Internet ON' : 'Internet OFF'}
-        </span>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full ${
+            device.is_enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+          }`}>
+            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${device.is_enabled ? 'bg-green-500' : 'bg-gray-400'}`} />
+            {device.is_enabled ? 'Internet ON' : 'Internet OFF'}
+          </span>
+          {!device.sophos_synced && (
+            <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full bg-amber-100 text-amber-700" title="Pending sync to Sophos firewall">
+              ⚠ Pending sync
+            </span>
+          )}
+        </div>
 
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-400 hidden sm:inline">{dateStr}</span>

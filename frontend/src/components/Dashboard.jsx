@@ -15,6 +15,7 @@ export default function Dashboard({ user, onLogout }) {
   const [editDevice, setEditDevice] = useState(null)
   const [search, setSearch] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
+  const [sophosConnected, setSophosConnected] = useState(true)
 
   const fetchDevices = async () => {
     try {
@@ -27,7 +28,21 @@ export default function Dashboard({ user, onLogout }) {
     }
   }
 
-  useEffect(() => { fetchDevices() }, [])
+  const checkSophos = async () => {
+    try {
+      const { data } = await api.get('/sophos/status')
+      setSophosConnected(data.connected)
+    } catch {
+      setSophosConnected(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchDevices()
+    checkSophos()
+    const interval = setInterval(checkSophos, 30000)
+    return () => clearInterval(interval)
+  }, [])
 
   const extractError = (e, fallback) => {
     const detail = e.response?.data?.detail
@@ -185,6 +200,13 @@ export default function Dashboard({ user, onLogout }) {
           </div>
         )}
       </header>
+
+      {!sophosConnected && (
+        <div className="bg-red-600 text-white text-sm px-4 py-2.5 flex items-center gap-2 justify-center">
+          <span className="w-2 h-2 rounded-full bg-white animate-pulse flex-shrink-0" />
+          Sophos firewall is unreachable — changes are queued and will sync automatically when connection is restored.
+        </div>
+      )}
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
         {/* Stats */}

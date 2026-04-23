@@ -23,6 +23,7 @@ class Device(Base):
     description = Column(String, default="")
     group = Column(String, default="School")
     is_enabled = Column(Boolean, default=False)
+    sophos_synced = Column(Boolean, default=True)
     sophos_host_name = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -47,6 +48,7 @@ def create_tables():
             "ALTER TABLE devices ADD COLUMN \"group\" VARCHAR DEFAULT 'School'",
             "ALTER TABLE local_users ADD COLUMN role VARCHAR DEFAULT 'user'",
             "ALTER TABLE local_users ADD COLUMN groups TEXT DEFAULT '[]'",
+            "ALTER TABLE devices ADD COLUMN sophos_synced BOOLEAN DEFAULT 1",
         ]:
             try:
                 conn.execute(text(stmt))
