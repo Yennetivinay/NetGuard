@@ -17,14 +17,14 @@ export default function Dashboard({ user, onLogout }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [sophosConnected, setSophosConnected] = useState(true)
 
-  const fetchDevices = async () => {
+  const fetchDevices = async (silent = false) => {
     try {
       const { data } = await api.get('/devices')
       setDevices(data)
     } catch {
-      toast.error('Failed to load devices')
+      if (!silent) toast.error('Failed to load devices')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -40,8 +40,12 @@ export default function Dashboard({ user, onLogout }) {
   useEffect(() => {
     fetchDevices()
     checkSophos()
-    const interval = setInterval(checkSophos, 30000)
-    return () => clearInterval(interval)
+    const devicePoll = setInterval(() => fetchDevices(true), 5000)
+    const sophosPoll = setInterval(checkSophos, 30000)
+    return () => {
+      clearInterval(devicePoll)
+      clearInterval(sophosPoll)
+    }
   }, [])
 
   const extractError = (e, fallback) => {
