@@ -448,9 +448,12 @@ def health():
 
 @app.get("/sophos/status")
 def sophos_status(_=Depends(current_user)):
+    import socket
+    host = os.getenv("SOPHOS_HOST", "")
+    port = int(os.getenv("SOPHOS_PORT", "4444"))
     try:
-        api = sophos()
-        api._request("<Get><MACHost></MACHost></Get>", timeout=5)
+        sock = socket.create_connection((host, port), timeout=3)
+        sock.close()
         return {"connected": True}
     except Exception as e:
         return {"connected": False, "error": str(e)}
