@@ -236,8 +236,10 @@ export default function Dashboard({ user, onLogout }) {
           />
           {isAdmin && (
             <button
-              onClick={() => setShowAdd(true)}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-5 py-2 sm:py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap"
+              onClick={() => sophosConnected && setShowAdd(true)}
+              disabled={!sophosConnected}
+              title={!sophosConnected ? 'Firewall not connected' : ''}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-5 py-2 sm:py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <span className="text-lg leading-none">+</span>
               <span className="hidden xs:inline sm:inline">Add Device</span>
@@ -285,6 +287,7 @@ export default function Dashboard({ user, onLogout }) {
                 onEdit={setEditDevice}
                 onDelete={handleDelete}
                 isAdmin={isAdmin}
+                sophosConnected={sophosConnected}
               />
             ))}
           </div>

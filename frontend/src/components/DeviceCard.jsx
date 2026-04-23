@@ -20,7 +20,7 @@ function Toggle({ enabled, onChange, disabled }) {
   )
 }
 
-export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin }) {
+export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin, sophosConnected }) {
   const [toggling, setToggling] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -70,7 +70,12 @@ export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin
             <p className="text-gray-500 text-xs sm:text-sm truncate mt-0.5">{device.description}</p>
           )}
         </div>
-        <Toggle enabled={device.is_enabled} onChange={handleToggle} disabled={toggling} />
+        <Toggle
+          enabled={device.is_enabled}
+          onChange={handleToggle}
+          disabled={toggling || !sophosConnected}
+          title={!sophosConnected ? 'Firewall not connected' : ''}
+        />
       </div>
 
       {/* MAC display */}
@@ -89,19 +94,12 @@ export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin
 
       {/* Footer */}
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full ${
-            device.is_enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-          }`}>
-            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${device.is_enabled ? 'bg-green-500' : 'bg-gray-400'}`} />
-            {device.is_enabled ? 'Internet ON' : 'Internet OFF'}
-          </span>
-          {!device.sophos_synced && (
-            <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full bg-amber-100 text-amber-700" title="Pending sync to Sophos firewall">
-              ⚠ Pending sync
-            </span>
-          )}
-        </div>
+        <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full ${
+          device.is_enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+        }`}>
+          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${device.is_enabled ? 'bg-green-500' : 'bg-gray-400'}`} />
+          {device.is_enabled ? 'Internet ON' : 'Internet OFF'}
+        </span>
 
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-400 hidden sm:inline">{dateStr}</span>
@@ -111,19 +109,22 @@ export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin
           {isAdmin && (
             <>
               <button
-                onClick={() => onEdit(device)}
-                className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium"
+                onClick={() => sophosConnected && onEdit(device)}
+                disabled={!sophosConnected}
+                title={!sophosConnected ? 'Firewall not connected' : ''}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Edit
               </button>
               <button
                 onClick={handleDelete}
-                disabled={deleting}
+                disabled={deleting || !sophosConnected}
+                title={!sophosConnected ? 'Firewall not connected' : ''}
                 className={`text-xs px-2.5 py-1.5 rounded-lg transition-colors font-medium ${
                   confirmDelete
                     ? 'bg-red-500 text-white hover:bg-red-600'
                     : 'bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-500'
-                } ${deleting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                } ${(deleting || !sophosConnected) ? 'opacity-40 cursor-not-allowed' : ''}`}
               >
                 {deleting ? '...' : confirmDelete ? 'Confirm?' : 'Delete'}
               </button>
