@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import api from '../api'
 import DeviceCard from './DeviceCard'
@@ -10,6 +10,7 @@ export default function Dashboard({ user, onLogout }) {
   const isAdmin = user.role === 'admin'
   const [devices, setDevices] = useState([])
   const [loading, setLoading] = useState(true)
+  const inFlightIds = useRef(new Set())
   const [showAdd, setShowAdd] = useState(false)
   const [showUsers, setShowUsers] = useState(false)
   const [editDevice, setEditDevice] = useState(null)
@@ -20,7 +21,9 @@ export default function Dashboard({ user, onLogout }) {
   const fetchDevices = async (silent = false) => {
     try {
       const { data } = await api.get('/devices')
-      setDevices(data)
+      setDevices((prev) =>
+        data.map((d) => inFlightIds.current.has(d.id) ? (prev.find((p) => p.id === d.id) || d) : d)
+      )
     } catch {
       if (!silent) toast.error('Failed to load devices')
     } finally {
@@ -72,16 +75,17 @@ export default function Dashboard({ user, onLogout }) {
   const handleToggle = async (id) => {
     const device = devices.find((d) => d.id === id)
     const newState = !device.is_enabled
-    // Flip instantly in UI, sync with server in background
+    inFlightIds.current.add(id)
     setDevices((ds) => ds.map((d) => d.id === id ? { ...d, is_enabled: newState } : d))
     try {
       const { data } = await api.patch(`/devices/${id}/toggle`)
       setDevices((ds) => ds.map((d) => d.id === id ? data : d))
       toast.success(data.is_enabled ? `${device.name}: Internet ON` : `${device.name}: Internet OFF`)
     } catch (e) {
-      // Revert on failure
       setDevices((ds) => ds.map((d) => d.id === id ? device : d))
       toast.error(extractError(e, 'Toggle failed'))
+    } finally {
+      inFlightIds.current.delete(id)
     }
   }
 

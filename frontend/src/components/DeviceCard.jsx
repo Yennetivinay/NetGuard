@@ -70,12 +70,7 @@ export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin
             <p className="text-gray-500 text-xs sm:text-sm truncate mt-0.5">{device.description}</p>
           )}
         </div>
-        <Toggle
-          enabled={device.is_enabled}
-          onChange={handleToggle}
-          disabled={toggling || !sophosConnected}
-          title={!sophosConnected ? 'Firewall not connected' : ''}
-        />
+        <Toggle enabled={device.is_enabled} onChange={handleToggle} disabled={toggling || !sophosConnected} />
       </div>
 
       {/* MAC display */}

@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 import traceback
 from datetime import datetime
 from typing import List, Optional
@@ -13,7 +14,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from auth import ADMIN_EMAIL, create_jwt, get_user_for_login, hash_password, seed_users_from_env, verify_jwt
-from database import Device, GROUPS, LocalUser, create_tables, get_db
+from database import Device, GROUPS, LocalUser, SessionLocal, create_tables, get_db
 from sophos import SophosAPI, mac_to_host_name, normalize_mac
 
 app = FastAPI(title="NetGuard")
@@ -30,11 +31,37 @@ create_tables()
 seed_users_from_env()
 
 
-def check_sophos_or_raise():
-    try:
-        sophos()._request("<Get><MACHost></MACHost></Get>", timeout=5)
-    except Exception:
-        raise HTTPException(status_code=503, detail="Firewall is not connected. Operation blocked.")
+async def _sophos_sync_loop():
+    """Every 30 seconds retry syncing any devices that failed to update Sophos."""
+    await asyncio.sleep(15)  # wait for backend to fully start
+    while True:
+        try:
+            db = SessionLocal()
+            unsynced = db.query(Device).filter(Device.sophos_synced == False).all()
+            if unsynced:
+                api = sophos()
+                rule = firewall_rule()
+                for device in unsynced:
+                    try:
+                        if device.is_enabled:
+                            api.add_to_rule(rule, device.sophos_host_name)
+                        else:
+                            api.remove_from_rule(rule, device.sophos_host_name)
+                        device.sophos_synced = True
+                        db.commit()
+                        print(f"[sync] Synced {device.name} to Sophos")
+                    except Exception as e:
+                        print(f"[sync] Still failing for {device.name}: {e}")
+        except Exception as e:
+            print(f"[sync] Loop error: {e}")
+        finally:
+            db.close()
+        await asyncio.sleep(30)
+
+
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(_sophos_sync_loop())
 
 # Two routers — one plain, one under /api — so both path styles work
 router = APIRouter()
@@ -253,7 +280,6 @@ def list_groups(_=Depends(current_user)):
 
 @router.post("/devices", response_model=DeviceOut, status_code=201)
 def add_device(data: DeviceCreate, db: Session = Depends(get_db), _=Depends(require_admin)):
-    check_sophos_or_raise()
     is_list = bool(data.mac_addresses)
 
     if not is_list and not data.mac_address:
@@ -384,7 +410,6 @@ def edit_device(device_id: int, data: DeviceEdit, db: Session = Depends(get_db),
 
 @router.delete("/devices/{device_id}")
 def delete_device(device_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db), _=Depends(require_admin)):
-    check_sophos_or_raise()
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -413,30 +438,43 @@ def delete_device(device_id: int, background_tasks: BackgroundTasks, db: Session
     return {"deleted": device_id}
 
 
+def _check_sophos_or_raise():
+    import socket
+    host = os.getenv("SOPHOS_HOST", "")
+    port = int(os.getenv("SOPHOS_PORT", "4444"))
+    try:
+        sock = socket.create_connection((host, port), timeout=3)
+        sock.close()
+    except Exception:
+        raise HTTPException(status_code=503, detail="Firewall is not connected. Operation blocked.")
+
+
 @router.patch("/devices/{device_id}/toggle", response_model=DeviceOut)
 def toggle_device(device_id: int, db: Session = Depends(get_db), _=Depends(current_user)):
-    check_sophos_or_raise()
-
+    _check_sophos_or_raise()
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
     new_state = not device.is_enabled
-    host_name = device.sophos_host_name
-    rule = firewall_rule()
+
+    # Save to DB first — refresh during Sophos call shows correct state
+    device.is_enabled = new_state
+    db.commit()
 
     try:
         if new_state:
-            sophos().add_to_rule(rule, host_name)
+            sophos().add_to_rule(firewall_rule(), device.sophos_host_name)
         else:
-            sophos().remove_from_rule(rule, host_name)
+            sophos().remove_from_rule(firewall_rule(), device.sophos_host_name)
     except Exception as e:
         traceback.print_exc()
+        # Revert DB on Sophos failure
+        device.is_enabled = not new_state
+        db.commit()
+        db.refresh(device)
         raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
 
-    device.is_enabled = new_state
-    device.sophos_synced = True
-    db.commit()
     db.refresh(device)
     return device
 
