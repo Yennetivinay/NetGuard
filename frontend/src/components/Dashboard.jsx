@@ -15,7 +15,8 @@ export default function Dashboard({ user, onLogout }) {
   const [editDevice, setEditDevice] = useState(null)
   const [search, setSearch] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
-  const [sophosError, setSophosError] = useState(false)
+  const [sophosConnected, setSophosConnected] = useState(true)
+  const [errorBanner, setErrorBanner] = useState(null)
 
   const fetchDevices = async () => {
     try {
@@ -28,12 +29,28 @@ export default function Dashboard({ user, onLogout }) {
     }
   }
 
-  useEffect(() => { fetchDevices() }, [])
-
-  const showSophosError = () => {
-    setSophosError(true)
-    setTimeout(() => setSophosError(false), 6000)
+  const checkSophos = async () => {
+    try {
+      const { data } = await api.get('/sophos/status')
+      setSophosConnected(data.connected)
+    } catch {
+      setSophosConnected(false)
+    }
   }
+
+  useEffect(() => {
+    fetchDevices()
+    checkSophos()
+    const interval = setInterval(checkSophos, 30000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const showError = (msg) => {
+    setErrorBanner(msg)
+    setTimeout(() => setErrorBanner(null), 7000)
+  }
+
+  const firewallError = () => showError('Firewall is not connected — operation not performed')
 
   const extractError = (e, fallback) => {
     const detail = e.response?.data?.detail
@@ -44,35 +61,36 @@ export default function Dashboard({ user, onLogout }) {
   }
 
   const handleAdd = async (form) => {
+    if (!sophosConnected) { firewallError(); return 'Firewall not connected' }
     try {
       const { data } = await api.post('/devices', form)
       setDevices((d) => [data, ...d])
-      setSophosError(false)
       toast.success(`${data.name} added to Sophos`)
       return null
     } catch (e) {
       const msg = extractError(e, 'Failed to add device')
-      if (e.response?.status === 503) showSophosError()
-      else toast.error(msg)
+      showError(msg)
       return msg
     }
   }
 
   const handleToggle = async (id) => {
+    if (!sophosConnected) { firewallError(); return }
     const device = devices.find((d) => d.id === id)
     setDevices((ds) => ds.map((d) => d.id === id ? { ...d, is_enabled: !d.is_enabled } : d))
     try {
       const { data } = await api.patch(`/devices/${id}/toggle`)
       setDevices((ds) => ds.map((d) => d.id === id ? data : d))
-      setSophosError(false)
+      setErrorBanner(null)
       toast.success(data.is_enabled ? `${device.name}: Internet ON` : `${device.name}: Internet OFF`)
     } catch (e) {
       setDevices((ds) => ds.map((d) => d.id === id ? device : d))
-      showSophosError()
+      showError(extractError(e, 'Toggle failed — firewall may be unreachable'))
     }
   }
 
   const handleEdit = async (id, form) => {
+    if (!sophosConnected) { firewallError(); return 'Firewall not connected' }
     try {
       const { data } = await api.patch(`/devices/${id}`, form)
       setDevices((ds) => ds.map((d) => d.id === id ? data : d))
@@ -80,21 +98,22 @@ export default function Dashboard({ user, onLogout }) {
       return null
     } catch (e) {
       const msg = extractError(e, 'Failed to update device')
-      toast.error(msg)
+      showError(msg)
       return msg
     }
   }
 
   const handleDelete = async (id) => {
+    if (!sophosConnected) { firewallError(); return }
     const device = devices.find((d) => d.id === id)
     setDevices((ds) => ds.filter((d) => d.id !== id))
     try {
       await api.delete(`/devices/${id}`)
-      setSophosError(false)
+      setErrorBanner(null)
       toast.success(`${device.name} removed`)
     } catch (e) {
       setDevices((ds) => [device, ...ds])
-      showSophosError()
+      showError(extractError(e, 'Delete failed — firewall may be unreachable'))
     }
   }
 
@@ -191,13 +210,13 @@ export default function Dashboard({ user, onLogout }) {
         )}
       </header>
 
-      {sophosError && (
+      {errorBanner && (
         <div className="bg-red-600 text-white text-sm px-4 py-2.5 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-white animate-pulse flex-shrink-0" />
-            Firewall is not connected — operation was not applied. Please try again later.
+            {errorBanner}
           </div>
-          <button onClick={() => setSophosError(false)} className="text-white hover:text-red-200 font-bold text-lg leading-none">×</button>
+          <button onClick={() => setErrorBanner(null)} className="text-white hover:text-red-200 font-bold text-lg leading-none flex-shrink-0">×</button>
         </div>
       )}
 
