@@ -20,8 +20,8 @@ start "NetGuard Tunnel" /min cmd /k "set PATH=%PATH%;C:\Program Files (x86)\clou
 echo.
 echo -----------------------------------------------
 echo  NetGuard is running
-echo  Local Frontend  : http://192.168.50.100:5173
-echo  Local Backend   : http://192.168.50.100:8000
+echo  Local Frontend  : http://[this-pc-ip]:5173
+echo  Local Backend   : http://[this-pc-ip]:8000
 echo  Remote Backend  : Check Tunnel window for URL
 echo -----------------------------------------------
 pause
