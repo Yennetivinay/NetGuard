@@ -1,6 +1,5 @@
 import os
 import json
-import asyncio
 import traceback
 from datetime import datetime
 from typing import List, Optional
@@ -14,8 +13,8 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from auth import ADMIN_EMAIL, create_jwt, get_user_for_login, hash_password, seed_users_from_env, verify_jwt
-from database import Device, GROUPS, LocalUser, SessionLocal, create_tables, get_db
-from sophos import SophosAPI, mac_to_host_name, normalize_mac
+from database import Device, GROUPS, LocalUser, create_tables, get_db
+from sophos import SophosAPI, normalize_mac
 
 app = FastAPI(title="NetGuard")
 
@@ -30,38 +29,6 @@ app.add_middleware(
 create_tables()
 seed_users_from_env()
 
-
-async def _sophos_sync_loop():
-    """Every 30 seconds retry syncing any devices that failed to update Sophos."""
-    await asyncio.sleep(15)  # wait for backend to fully start
-    while True:
-        try:
-            db = SessionLocal()
-            unsynced = db.query(Device).filter(Device.sophos_synced == False).all()
-            if unsynced:
-                api = sophos()
-                rule = firewall_rule()
-                for device in unsynced:
-                    try:
-                        if device.is_enabled:
-                            api.add_to_rule(rule, device.sophos_host_name)
-                        else:
-                            api.remove_from_rule(rule, device.sophos_host_name)
-                        device.sophos_synced = True
-                        db.commit()
-                        print(f"[sync] Synced {device.name} to Sophos")
-                    except Exception as e:
-                        print(f"[sync] Still failing for {device.name}: {e}")
-        except Exception as e:
-            print(f"[sync] Loop error: {e}")
-        finally:
-            db.close()
-        await asyncio.sleep(30)
-
-
-@app.on_event("startup")
-async def startup():
-    asyncio.create_task(_sophos_sync_loop())
 
 # Two routers — one plain, one under /api — so both path styles work
 router = APIRouter()
@@ -527,15 +494,13 @@ def sophos_test(_=Depends(current_user)):
     pwd = os.getenv("SOPHOS_PASSWORD", "")
     try:
         api = sophos()
-        members = api.get_group_members(mac_group())
+        api._request("<Get><MACHost></MACHost></Get>", timeout=5)
         return {
             "status": "ok",
             "host": host,
             "port": port,
             "username": user,
             "password_length": len(pwd),
-            "mac_group": mac_group(),
-            "group_members": members,
         }
     except Exception as e:
         traceback.print_exc()
