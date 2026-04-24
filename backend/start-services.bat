@@ -1,6 +1,9 @@
 @echo off
 cd /d "%~dp0"
 
+:: Add cloudflared to PATH
+set PATH=%PATH%;C:\Program Files (x86)\cloudflared
+
 echo Starting NetGuard Backend...
 start "NetGuard Backend" /min cmd /k "python -m uvicorn main:app --host 0.0.0.0 --port 8000"
 
@@ -12,7 +15,7 @@ start "NetGuard Frontend" /min cmd /k "cd /d "%~dp0..\frontend" && npm run dev -
 timeout /t 3 /nobreak >nul
 
 echo Starting Cloudflare Tunnel (Remote)...
-start "NetGuard Tunnel" /min cmd /k "\"C:\Program Files (x86)\cloudflared\cloudflared.exe\" tunnel --url http://localhost:8000"
+start "NetGuard Tunnel" /min cmd /k "set PATH=%PATH%;C:\Program Files (x86)\cloudflared && cloudflared tunnel --url http://localhost:8000"
 
 echo.
 echo -----------------------------------------------
