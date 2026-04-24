@@ -174,6 +174,26 @@ def _create_user(data: UserCreate, db: Session = Depends(get_db), _=Depends(requ
     return user
 
 
+class UserUpdate(BaseModel):
+    role: str
+    groups: List[str] = []
+
+
+def _update_user(user_id: int, data: UserUpdate, db: Session = Depends(get_db), _=Depends(require_admin)):
+    user = db.query(LocalUser).filter(LocalUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.email == ADMIN_EMAIL:
+        raise HTTPException(status_code=400, detail="Cannot modify the main admin account")
+    role = data.role if data.role in ("admin", "user") else "user"
+    valid_groups = [g for g in data.groups if g in GROUPS]
+    user.role = role
+    user.groups = json.dumps(GROUPS if role == "admin" else valid_groups)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 def _delete_user(user_id: int, db: Session = Depends(get_db), admin=Depends(require_admin)):
     user = db.query(LocalUser).filter(LocalUser.id == user_id).first()
     if not user:
@@ -202,10 +222,12 @@ def _reset_password(user_id: int, data: PasswordReset, db: Session = Depends(get
 
 router.get("/users", response_model=List[UserOut])(_list_users)
 router.post("/users", response_model=UserOut, status_code=201)(_create_user)
+router.put("/users/{user_id}", response_model=UserOut)(_update_user)
 router.delete("/users/{user_id}")(_delete_user)
 router.patch("/users/{user_id}/password")(_reset_password)
 api_router.get("/users", response_model=List[UserOut])(_list_users)
 api_router.post("/users", response_model=UserOut, status_code=201)(_create_user)
+api_router.put("/users/{user_id}", response_model=UserOut)(_update_user)
 api_router.delete("/users/{user_id}")(_delete_user)
 api_router.patch("/users/{user_id}/password")(_reset_password)
 

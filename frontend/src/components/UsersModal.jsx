@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react'
 import api from '../api'
 
-function UserRow({ u, onDelete, onResetPassword }) {
-  const [resetting, setResetting] = useState(false)
+function UserRow({ u, onDelete, onResetPassword, onUpdate }) {
+  const [panel, setPanel] = useState(null) // null | 'password' | 'edit'
   const [newPassword, setNewPassword] = useState('')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
+  const [editRole, setEditRole] = useState(u.role)
+  const [editGroups, setEditGroups] = useState(() => {
+    try { return JSON.parse(u.groups || '[]') } catch { return [] }
+  })
+
+  const closePanel = () => { setPanel(null); setMsg(''); setNewPassword('') }
 
   const handleReset = async (e) => {
     e.preventDefault()
@@ -16,13 +22,31 @@ function UserRow({ u, onDelete, onResetPassword }) {
       await onResetPassword(u.id, newPassword.trim())
       setMsg('Password updated')
       setNewPassword('')
-      setTimeout(() => { setResetting(false); setMsg('') }, 1500)
+      setTimeout(closePanel, 1500)
     } catch (err) {
       setMsg(err.response?.data?.detail || 'Failed')
     } finally {
       setSaving(false)
     }
   }
+
+  const handleUpdate = async (e) => {
+    e.preventDefault()
+    setSaving(true)
+    setMsg('')
+    try {
+      await onUpdate(u.id, { role: editRole, groups: editGroups })
+      setMsg('Saved')
+      setTimeout(closePanel, 1000)
+    } catch (err) {
+      setMsg(err.response?.data?.detail || 'Failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const toggleGroup = (g) =>
+    setEditGroups((prev) => prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g])
 
   return (
     <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
@@ -49,10 +73,16 @@ function UserRow({ u, onDelete, onResetPassword }) {
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <button
-            onClick={() => { setResetting((r) => !r); setMsg(''); setNewPassword('') }}
+            onClick={() => { setPanel(panel === 'edit' ? null : 'edit'); setMsg(''); setEditRole(u.role); setEditGroups(() => { try { return JSON.parse(u.groups || '[]') } catch { return [] } }) }}
             className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium"
           >
-            {resetting ? 'Cancel' : 'Reset PW'}
+            {panel === 'edit' ? 'Cancel' : 'Edit'}
+          </button>
+          <button
+            onClick={() => { setPanel(panel === 'password' ? null : 'password'); setMsg(''); setNewPassword('') }}
+            className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium"
+          >
+            {panel === 'password' ? 'Cancel' : 'Reset PW'}
           </button>
           <button
             onClick={() => onDelete(u.id, u.email)}
@@ -63,8 +93,55 @@ function UserRow({ u, onDelete, onResetPassword }) {
         </div>
       </div>
 
-      {/* Inline reset form */}
-      {resetting && (
+      {/* Edit role/groups panel */}
+      {panel === 'edit' && (
+        <form onSubmit={handleUpdate} className="border-t border-gray-100 px-3 sm:px-4 py-3 bg-gray-50 space-y-3">
+          <p className="text-xs font-medium text-gray-600">Edit access for {u.email}</p>
+          <select
+            value={editRole}
+            onChange={(e) => { setEditRole(e.target.value); setEditGroups([]) }}
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+          >
+            <option value="user">Normal User — toggle only</option>
+            <option value="admin">Admin — full access</option>
+          </select>
+          {editRole === 'user' && (
+            <div>
+              <p className="text-xs font-medium text-gray-600 mb-1.5">Group Access</p>
+              <div className="flex gap-2">
+                {GROUPS.map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => toggleGroup(g)}
+                    className={`flex-1 py-2 text-sm font-medium rounded-lg border transition-all ${
+                      editGroups.includes(g)
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'border-gray-300 text-gray-600 hover:border-blue-400'
+                    }`}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
+              {editGroups.length === 0 && (
+                <p className="text-xs text-amber-600 mt-1">No group selected — user will see no devices.</p>
+              )}
+            </div>
+          )}
+          {msg && <p className={`text-xs ${msg === 'Saved' ? 'text-green-600' : 'text-red-600'}`}>{msg}</p>}
+          <button
+            type="submit"
+            disabled={saving}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            {saving ? 'Saving...' : 'Save Changes'}
+          </button>
+        </form>
+      )}
+
+      {/* Reset password panel */}
+      {panel === 'password' && (
         <form onSubmit={handleReset} className="border-t border-gray-100 px-3 sm:px-4 py-3 bg-gray-50">
           <p className="text-xs font-medium text-gray-600 mb-2">Set new password for {u.email}</p>
           <div className="flex gap-2">
@@ -154,6 +231,11 @@ export default function UsersModal({ onClose }) {
     await api.patch(`/users/${id}/password`, { password: newPassword })
   }
 
+  const handleUpdate = async (id, data) => {
+    const { data: updated } = await api.put(`/users/${id}`, data)
+    setUsers((u) => u.map((x) => x.id === id ? updated : x))
+  }
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4" onClick={onClose}>
       <div
@@ -240,6 +322,7 @@ export default function UsersModal({ onClose }) {
                   u={u}
                   onDelete={handleDelete}
                   onResetPassword={handleResetPassword}
+                  onUpdate={handleUpdate}
                 />
               ))
             )}
