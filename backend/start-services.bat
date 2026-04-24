@@ -12,7 +12,7 @@ start "NetGuard Frontend" /min cmd /k "cd /d "%~dp0..\frontend" && npm run dev -
 timeout /t 3 /nobreak >nul
 
 echo Starting Cloudflare Tunnel (Remote)...
-start "NetGuard Tunnel" /min cmd /k "cloudflared tunnel --url http://localhost:8000"
+start "NetGuard Tunnel" /min cmd /k "\"C:\Program Files (x86)\cloudflared\cloudflared.exe\" tunnel --url http://localhost:8000"
 
 echo.
 echo -----------------------------------------------
