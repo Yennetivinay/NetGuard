@@ -66,7 +66,7 @@ def get_user_for_login(email: str, password: str):
 
 
 def create_jwt(data: dict) -> str:
-    payload = {**data, "exp": datetime.utcnow() + timedelta(hours=8)}
+    payload = {**data, "exp": datetime.utcnow() + timedelta(hours=1)}
     return jwt.encode(payload, os.getenv("JWT_SECRET", "dev-secret"), algorithm="HS256")
 
 

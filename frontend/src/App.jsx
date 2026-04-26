@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Login from './components/Login'
 import Dashboard from './components/Dashboard'
 
@@ -33,10 +33,28 @@ export default function App() {
     setLoading(false)
   }, [])
 
-  const logout = () => {
+  const logout = useCallback(() => {
     localStorage.removeItem('ng_token')
     setUser(null)
-  }
+  }, [])
+
+  const inactivityTimer = useRef(null)
+
+  const resetInactivityTimer = useCallback(() => {
+    if (inactivityTimer.current) clearTimeout(inactivityTimer.current)
+    inactivityTimer.current = setTimeout(logout, 30 * 60 * 1000)
+  }, [logout])
+
+  useEffect(() => {
+    if (!user) return
+    const events = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart']
+    events.forEach(e => window.addEventListener(e, resetInactivityTimer))
+    resetInactivityTimer()
+    return () => {
+      events.forEach(e => window.removeEventListener(e, resetInactivityTimer))
+      if (inactivityTimer.current) clearTimeout(inactivityTimer.current)
+    }
+  }, [user, resetInactivityTimer])
 
   if (loading) {
     return (
