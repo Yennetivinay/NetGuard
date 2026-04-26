@@ -83,6 +83,8 @@ def firewall_rule() -> str:
     return os.getenv("SOPHOS_FIREWALL_RULE", "#Default_NP_DIRECT_ACCESS")
 
 
+MAX_SESSIONS = 5
+
 def current_user(request: Request, db: Session = Depends(get_db)) -> dict:
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
@@ -91,8 +93,15 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     db_user = db.query(LocalUser).filter(LocalUser.email == user["email"]).first()
-    if db_user and db_user.session_id and user.get("session_id") != db_user.session_id:
-        raise HTTPException(status_code=401, detail="Session expired. Please login again.")
+    if db_user:
+        try:
+            sessions = json.loads(db_user.session_id or "[]")
+            if not isinstance(sessions, list):
+                sessions = []
+        except Exception:
+            sessions = []
+        if sessions and user.get("session_id") not in sessions:
+            raise HTTPException(status_code=401, detail="Session expired. Please login again.")
     return user
 
 
@@ -116,7 +125,16 @@ def _login(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
     groups = db_user.groups if db_user else "[]"
     session_id = str(uuid.uuid4())
     if db_user:
-        db_user.session_id = session_id
+        try:
+            sessions = json.loads(db_user.session_id or "[]")
+            if not isinstance(sessions, list):
+                sessions = []
+        except Exception:
+            sessions = []
+        sessions.append(session_id)
+        if len(sessions) > MAX_SESSIONS:
+            sessions = sessions[-MAX_SESSIONS:]  # evict oldest
+        db_user.session_id = json.dumps(sessions)
         db.commit()
     token = create_jwt({
         "email": user["email"],
