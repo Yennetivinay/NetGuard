@@ -1,7 +1,8 @@
 import os
 import json
 import traceback
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from dotenv import load_dotenv
@@ -13,7 +14,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from auth import ADMIN_EMAIL, create_jwt, get_user_for_login, hash_password, seed_users_from_env, verify_jwt
-from database import Device, GROUPS, LocalUser, create_tables, get_db
+from database import ActivityLog, Device, GROUPS, LocalUser, create_tables, get_db
 from sophos import SophosAPI, normalize_mac
 
 app = FastAPI(title="NetGuard")
@@ -28,6 +29,34 @@ app.add_middleware(
 
 create_tables()
 seed_users_from_env()
+
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+_login_attempts: dict = defaultdict(lambda: {"count": 0, "locked_until": None})
+MAX_ATTEMPTS = 5
+LOCKOUT_MINUTES = 15
+
+def check_rate_limit(ip: str):
+    record = _login_attempts[ip]
+    if record["locked_until"] and datetime.utcnow() < record["locked_until"]:
+        remaining = int((record["locked_until"] - datetime.utcnow()).total_seconds() / 60) + 1
+        raise HTTPException(status_code=429, detail=f"Too many failed attempts. Try again in {remaining} minutes.")
+
+def record_failed_attempt(ip: str):
+    record = _login_attempts[ip]
+    record["count"] += 1
+    if record["count"] >= MAX_ATTEMPTS:
+        record["locked_until"] = datetime.utcnow() + timedelta(minutes=LOCKOUT_MINUTES)
+        record["count"] = 0
+
+def reset_attempts(ip: str):
+    _login_attempts[ip] = {"count": 0, "locked_until": None}
+
+
+# ── Activity logging ───────────────────────────────────────────────────────────
+def log_activity(db: Session, user_email: str, action: str, device_name: str = "", details: str = ""):
+    db.add(ActivityLog(user_email=user_email, action=action, device_name=device_name, details=details))
+    db.commit()
 
 
 # Two routers — one plain, one under /api — so both path styles work
@@ -70,10 +99,15 @@ class LoginRequest(BaseModel):
     password: str
 
 
-def _login(data: LoginRequest, db: Session = Depends(get_db)):
+def _login(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    ip = request.client.host
+    check_rate_limit(ip)
     user = get_user_for_login(data.email, data.password)
     if not user:
+        record_failed_attempt(ip)
+        log_activity(db, data.email, "LOGIN_FAILED", details=f"Failed login from {ip}")
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    reset_attempts(ip)
     db_user = db.query(LocalUser).filter(LocalUser.email == user["email"]).first()
     groups = db_user.groups if db_user else "[]"
     token = create_jwt({
@@ -82,6 +116,7 @@ def _login(data: LoginRequest, db: Session = Depends(get_db)):
         "role": user["role"],
         "groups": groups,
     })
+    log_activity(db, user["email"], "LOGIN", details=f"Logged in from {ip}")
     return {"token": token}
 
 
@@ -268,7 +303,7 @@ def list_groups(_=Depends(current_user)):
 
 
 @router.post("/devices", response_model=DeviceOut, status_code=201)
-def add_device(data: DeviceCreate, db: Session = Depends(get_db), _=Depends(require_admin)):
+def add_device(data: DeviceCreate, db: Session = Depends(get_db), user=Depends(require_admin)):
     is_list = bool(data.mac_addresses)
 
     if not is_list and not data.mac_address:
@@ -303,6 +338,7 @@ def add_device(data: DeviceCreate, db: Session = Depends(get_db), _=Depends(requ
     db.add(device)
     db.commit()
     db.refresh(device)
+    log_activity(db, user["email"], "ADD_DEVICE", device_name=data.name)
     return device
 
 
@@ -340,7 +376,7 @@ class DeviceEdit(BaseModel):
 
 
 @router.patch("/devices/{device_id}", response_model=DeviceOut)
-def edit_device(device_id: int, data: DeviceEdit, db: Session = Depends(get_db), _=Depends(require_admin)):
+def edit_device(device_id: int, data: DeviceEdit, db: Session = Depends(get_db), user=Depends(require_admin)):
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -394,11 +430,12 @@ def edit_device(device_id: int, data: DeviceEdit, db: Session = Depends(get_db),
     device.group = data.group if data.group in GROUPS else device.group
     db.commit()
     db.refresh(device)
+    log_activity(db, user["email"], "EDIT_DEVICE", device_name=new_name)
     return device
 
 
 @router.delete("/devices/{device_id}")
-def delete_device(device_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db), _=Depends(require_admin)):
+def delete_device(device_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db), user=Depends(require_admin)):
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -407,6 +444,8 @@ def delete_device(device_id: int, background_tasks: BackgroundTasks, db: Session
     rule = firewall_rule()
     api = sophos()
 
+    device_name = device.name
+    log_activity(db, user["email"], "DELETE_DEVICE", device_name=device_name)
     db.delete(device)
     db.commit()
 
@@ -439,7 +478,7 @@ def _check_sophos_or_raise():
 
 
 @router.patch("/devices/{device_id}/toggle", response_model=DeviceOut)
-def toggle_device(device_id: int, db: Session = Depends(get_db), _=Depends(current_user)):
+def toggle_device(device_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
     _check_sophos_or_raise()
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
@@ -447,7 +486,6 @@ def toggle_device(device_id: int, db: Session = Depends(get_db), _=Depends(curre
 
     new_state = not device.is_enabled
 
-    # Save to DB first — refresh during Sophos call shows correct state
     device.is_enabled = new_state
     db.commit()
 
@@ -458,14 +496,20 @@ def toggle_device(device_id: int, db: Session = Depends(get_db), _=Depends(curre
             sophos().remove_from_rule(firewall_rule(), device.sophos_host_name)
     except Exception as e:
         traceback.print_exc()
-        # Revert DB on Sophos failure
         device.is_enabled = not new_state
         db.commit()
         db.refresh(device)
         raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
 
+    log_activity(db, user["email"], "TOGGLE_ON" if new_state else "TOGGLE_OFF", device_name=device.name)
     db.refresh(device)
     return device
+
+
+@router.get("/logs")
+def get_logs(db: Session = Depends(get_db), _=Depends(require_admin)):
+    logs = db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(200).all()
+    return logs
 
 
 @app.get("/health")
@@ -513,6 +557,11 @@ def sophos_test(_=Depends(current_user)):
             "error": str(e),
         }
 
+
+def _get_logs(db: Session = Depends(get_db), _=Depends(require_admin)):
+    return db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(200).all()
+
+api_router.get("/logs")(_get_logs)
 
 app.include_router(router)
 app.include_router(api_router)

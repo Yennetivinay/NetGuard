@@ -39,6 +39,17 @@ class LocalUser(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class ActivityLog(Base):
+    __tablename__ = "activity_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_email = Column(String, nullable=False)
+    action = Column(String, nullable=False)
+    device_name = Column(String, default="")
+    details = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 def create_tables():
     Base.metadata.create_all(bind=engine)
     with engine.connect() as conn:

@@ -13,6 +13,8 @@ export default function Dashboard({ user, onLogout }) {
   const inFlightIds = useRef(new Set())
   const [showAdd, setShowAdd] = useState(false)
   const [showUsers, setShowUsers] = useState(false)
+  const [showLogs, setShowLogs] = useState(false)
+  const [logs, setLogs] = useState([])
   const [editDevice, setEditDevice] = useState(null)
   const [search, setSearch] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
@@ -144,12 +146,20 @@ export default function Dashboard({ user, onLogout }) {
           {/* Desktop nav */}
           <div className="hidden sm:flex items-center gap-2">
             {isAdmin && (
-              <button
-                onClick={() => setShowUsers(true)}
-                className="text-sm text-gray-500 hover:text-gray-900 border border-gray-200 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors whitespace-nowrap"
-              >
-                Manage Users
-              </button>
+              <>
+                <button
+                  onClick={() => setShowUsers(true)}
+                  className="text-sm text-gray-500 hover:text-gray-900 border border-gray-200 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors whitespace-nowrap"
+                >
+                  Manage Users
+                </button>
+                <button
+                  onClick={async () => { const { data } = await api.get('/logs'); setLogs(data); setShowLogs(true) }}
+                  className="text-sm text-gray-500 hover:text-gray-900 border border-gray-200 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors whitespace-nowrap"
+                >
+                  Activity Logs
+                </button>
+              </>
             )}
             <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-semibold flex-shrink-0">
               {user.name?.[0]?.toUpperCase() || user.email?.[0]?.toUpperCase() || '?'}
@@ -304,6 +314,39 @@ export default function Dashboard({ user, onLogout }) {
 
       {showAdd && <AddDeviceModal onAdd={handleAdd} onClose={() => setShowAdd(false)} />}
       {showUsers && <UsersModal onClose={() => setShowUsers(false)} />}
+      {showLogs && (
+        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4" onClick={() => setShowLogs(false)}>
+          <div className="bg-white w-full sm:rounded-2xl sm:max-w-2xl rounded-t-2xl shadow-2xl max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 pb-6 pt-4 sm:p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-bold text-gray-900">Activity Logs</h2>
+                <button onClick={() => setShowLogs(false)} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+              </div>
+              <div className="space-y-2">
+                {logs.length === 0 ? (
+                  <p className="text-center text-gray-400 text-sm py-8">No activity yet.</p>
+                ) : logs.map((log) => (
+                  <div key={log.id} className="flex items-start gap-3 px-3 py-2.5 rounded-lg bg-gray-50 border border-gray-100">
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 mt-0.5 ${
+                      log.action === 'TOGGLE_ON' ? 'bg-green-100 text-green-700' :
+                      log.action === 'TOGGLE_OFF' ? 'bg-gray-200 text-gray-600' :
+                      log.action === 'LOGIN_FAILED' ? 'bg-red-100 text-red-700' :
+                      log.action === 'LOGIN' ? 'bg-blue-100 text-blue-700' :
+                      log.action === 'DELETE_DEVICE' ? 'bg-red-100 text-red-600' :
+                      'bg-indigo-100 text-indigo-700'
+                    }`}>{log.action.replace('_', ' ')}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-gray-800">{log.user_email} {log.device_name && `→ ${log.device_name}`}</p>
+                      {log.details && <p className="text-xs text-gray-400">{log.details}</p>}
+                    </div>
+                    <span className="text-xs text-gray-400 flex-shrink-0">{new Date(log.created_at + 'Z').toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {editDevice && (
         <EditDeviceModal
           device={editDevice}
