@@ -34,8 +34,9 @@ class LocalUser(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, nullable=False)
     password_hash = Column(String, nullable=False)
-    role = Column(String, default="user")       # "admin" or "user"
-    groups = Column(String, default="[]")       # JSON array of accessible groups
+    role = Column(String, default="user")
+    groups = Column(String, default="[]")
+    session_id = Column(String, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -60,6 +61,7 @@ def create_tables():
             "ALTER TABLE local_users ADD COLUMN role VARCHAR DEFAULT 'user'",
             "ALTER TABLE local_users ADD COLUMN groups TEXT DEFAULT '[]'",
             "ALTER TABLE devices ADD COLUMN sophos_synced BOOLEAN DEFAULT 1",
+            "ALTER TABLE local_users ADD COLUMN session_id VARCHAR DEFAULT ''",
         ]:
             try:
                 conn.execute(text(stmt))

@@ -1,6 +1,7 @@
 import os
 import json
 import traceback
+import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -82,13 +83,16 @@ def firewall_rule() -> str:
     return os.getenv("SOPHOS_FIREWALL_RULE", "#Default_NP_DIRECT_ACCESS")
 
 
-def current_user(request: Request) -> dict:
+def current_user(request: Request, db: Session = Depends(get_db)) -> dict:
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
     user = verify_jwt(auth[7:])
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+    db_user = db.query(LocalUser).filter(LocalUser.email == user["email"]).first()
+    if db_user and db_user.session_id and user.get("session_id") != db_user.session_id:
+        raise HTTPException(status_code=401, detail="Session expired. Please login again.")
     return user
 
 
@@ -110,11 +114,16 @@ def _login(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
     reset_attempts(ip)
     db_user = db.query(LocalUser).filter(LocalUser.email == user["email"]).first()
     groups = db_user.groups if db_user else "[]"
+    session_id = str(uuid.uuid4())
+    if db_user:
+        db_user.session_id = session_id
+        db.commit()
     token = create_jwt({
         "email": user["email"],
         "name": user["email"].split("@")[0],
         "role": user["role"],
         "groups": groups,
+        "session_id": session_id,
     })
     log_activity(db, user["email"], "LOGIN", details=f"Logged in from {ip}")
     return {"token": token}
