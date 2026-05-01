@@ -539,6 +539,143 @@ def get_logs(db: Session = Depends(get_db), _=Depends(require_admin)):
     return logs
 
 
+# ── IP Hosts (admin only) ─────────────────────────────────────────────────────
+
+IP_TYPES = ("IP", "IPRange", "IPList")
+
+
+class IPHostCreate(BaseModel):
+    name: str
+    ip_type: str
+    ip_value: str
+    description: str = ""
+
+    @field_validator("ip_type")
+    @classmethod
+    def validate_ip_type(cls, v):
+        if v not in IP_TYPES:
+            raise ValueError(f"ip_type must be one of {IP_TYPES}")
+        return v
+
+
+class IPHostOut(BaseModel):
+    name: str
+    ip_type: str
+    ip_value: str
+    description: str
+    is_enabled: bool
+
+
+def _list_ip_hosts(_=Depends(require_admin)):
+    _check_sophos_or_raise()
+    return sophos().get_ip_hosts(firewall_rule())
+
+
+def _create_ip_host(data: IPHostCreate, db: Session = Depends(get_db), user=Depends(require_admin)):
+    _check_sophos_or_raise()
+    api = sophos()
+    if api.ip_host_exists(data.name):
+        raise HTTPException(status_code=409, detail="IP host name already exists on firewall")
+    try:
+        api.add_ip_host(data.name, data.ip_type, data.ip_value, data.description)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+    log_activity(db, user["email"], "ADD_IP_HOST", device_name=data.name)
+    return {"name": data.name, "ip_type": data.ip_type, "ip_value": data.ip_value,
+            "description": data.description, "is_enabled": False}
+
+
+class IPHostEdit(BaseModel):
+    name: str
+    ip_type: str
+    ip_value: str
+    description: str = ""
+
+    @field_validator("ip_type")
+    @classmethod
+    def validate_ip_type(cls, v):
+        if v not in IP_TYPES:
+            raise ValueError(f"ip_type must be one of {IP_TYPES}")
+        return v
+
+
+def _edit_ip_host(host_name: str, data: IPHostEdit, db: Session = Depends(get_db), user=Depends(require_admin)):
+    _check_sophos_or_raise()
+    api = sophos()
+    if not api.ip_host_exists(host_name):
+        raise HTTPException(status_code=404, detail="IP host not found on firewall")
+    rule = firewall_rule()
+    try:
+        networks = api.get_rule_networks(rule)
+        is_enabled = host_name in networks
+        if host_name != data.name or True:
+            if is_enabled:
+                api.remove_from_rule(rule, host_name)
+            api.update_ip_host(host_name, data.name, data.ip_type, data.ip_value, data.description)
+            if is_enabled:
+                api.add_to_rule(rule, data.name)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+    log_activity(db, user["email"], "EDIT_IP_HOST", device_name=data.name)
+    return {"name": data.name, "ip_type": data.ip_type, "ip_value": data.ip_value,
+            "description": data.description, "is_enabled": is_enabled}
+
+
+def _delete_ip_host(host_name: str, db: Session = Depends(get_db), user=Depends(require_admin)):
+    _check_sophos_or_raise()
+    api = sophos()
+    rule = firewall_rule()
+    try:
+        api.remove_from_rule(rule, host_name)
+    except Exception as e:
+        print(f"[delete] remove from rule: {e}")
+    try:
+        if api.ip_host_exists(host_name):
+            api.remove_ip_host(host_name)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Firewall denied removal: {e}")
+    log_activity(db, user["email"], "DELETE_IP_HOST", device_name=host_name)
+    return {"deleted": host_name}
+
+
+def _toggle_ip_host(host_name: str, db: Session = Depends(get_db), user=Depends(require_admin)):
+    _check_sophos_or_raise()
+    api = sophos()
+    rule = firewall_rule()
+    try:
+        networks = api.get_rule_networks(rule)
+        is_enabled = host_name in networks
+        new_state = not is_enabled
+        if new_state:
+            api.add_to_rule(rule, host_name)
+        else:
+            api.remove_from_rule(rule, host_name)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+    log_activity(db, user["email"], "IP_HOST_ON" if new_state else "IP_HOST_OFF", device_name=host_name)
+    hosts = api.get_ip_hosts(rule)
+    host = next((h for h in hosts if h["name"] == host_name), None)
+    if not host:
+        raise HTTPException(status_code=404, detail="IP host not found on firewall")
+    return host
+
+
+router.get("/ip-hosts", response_model=List[IPHostOut])(_list_ip_hosts)
+router.post("/ip-hosts", response_model=IPHostOut, status_code=201)(_create_ip_host)
+router.patch("/ip-hosts/{host_name}", response_model=IPHostOut)(_edit_ip_host)
+router.delete("/ip-hosts/{host_name}")(_delete_ip_host)
+router.patch("/ip-hosts/{host_name}/toggle", response_model=IPHostOut)(_toggle_ip_host)
+api_router.get("/ip-hosts", response_model=List[IPHostOut])(_list_ip_hosts)
+api_router.post("/ip-hosts", response_model=IPHostOut, status_code=201)(_create_ip_host)
+api_router.patch("/ip-hosts/{host_name}", response_model=IPHostOut)(_edit_ip_host)
+api_router.delete("/ip-hosts/{host_name}")(_delete_ip_host)
+api_router.patch("/ip-hosts/{host_name}/toggle", response_model=IPHostOut)(_toggle_ip_host)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -589,6 +726,161 @@ def _get_logs(db: Session = Depends(get_db), _=Depends(require_admin)):
     return db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(200).all()
 
 api_router.get("/logs")(_get_logs)
+
+
+# ── Firewall Users (admin only) ───────────────────────────────────────────────
+
+class FirewallUserCreate(BaseModel):
+    username: str
+    name: str
+    email: str
+    password: str
+    group: str
+    description: str = ""
+    status: str = "Active"
+
+    @field_validator("email")
+    @classmethod
+    def email_required(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Email is required")
+        return v.strip()
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v):
+        if v not in ("Active", "Inactive"):
+            raise ValueError("status must be Active or Inactive")
+        return v
+
+
+class FirewallUserEdit(BaseModel):
+    name: str
+    email: str
+    group: str
+    description: str = ""
+    status: str = "Active"
+    password: str = ""
+
+    @field_validator("email")
+    @classmethod
+    def email_required(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Email is required")
+        return v.strip()
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v):
+        if v not in ("Active", "Inactive"):
+            raise ValueError("status must be Active or Inactive")
+        return v
+
+
+def _list_firewall_users(_=Depends(require_admin)):
+    try:
+        return sophos().get_firewall_users()
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+
+
+def _list_firewall_groups(_=Depends(require_admin)):
+    try:
+        return sophos().get_firewall_groups()
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+
+
+def _create_firewall_user(data: FirewallUserCreate, db: Session = Depends(get_db), user=Depends(require_admin)):
+    try:
+        sophos().add_firewall_user(
+            username=data.username.strip(),
+            name=data.name.strip(),
+            password=data.password,
+            email=data.email,
+            group=data.group,
+            description=data.description,
+            status=data.status,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+    log_activity(db, user["email"], "ADD_FW_USER", device_name=data.username)
+    return {"username": data.username.strip(), "name": data.name.strip(),
+            "email": data.email, "group": data.group,
+            "status": data.status, "description": data.description}
+
+
+def _edit_firewall_user(username: str, data: FirewallUserEdit, db: Session = Depends(get_db), user=Depends(require_admin)):
+    try:
+        sophos().update_firewall_user(
+            username=username,
+            name=data.name.strip(),
+            email=data.email,
+            group=data.group,
+            description=data.description,
+            status=data.status,
+            password=data.password,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+    log_activity(db, user["email"], "EDIT_FW_USER", device_name=username)
+    return {"username": username, "name": data.name.strip(),
+            "email": data.email, "group": data.group,
+            "status": data.status, "description": data.description}
+
+
+def _delete_firewall_user(username: str, db: Session = Depends(get_db), user=Depends(require_admin)):
+    try:
+        sophos().delete_firewall_user(username)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+    log_activity(db, user["email"], "DELETE_FW_USER", device_name=username)
+    return {"deleted": username}
+
+
+def _toggle_firewall_user_status(username: str, db: Session = Depends(get_db), user=Depends(require_admin)):
+    _check_sophos_or_raise()
+    try:
+        api = sophos()
+        users = api.get_firewall_users()
+        fw_user = next((u for u in users if u["username"] == username), None)
+        if not fw_user:
+            raise HTTPException(status_code=404, detail="Firewall user not found")
+        new_status = "Inactive" if fw_user["status"] == "Active" else "Active"
+        api.update_firewall_user(
+            username=username,
+            name=fw_user["name"],
+            email=fw_user["email"],
+            group=fw_user["group"],
+            description=fw_user["description"],
+            status=new_status,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+    log_activity(db, user["email"], "FW_USER_ACTIVE" if new_status == "Active" else "FW_USER_INACTIVE", device_name=username)
+    return {**fw_user, "status": new_status}
+
+
+router.get("/firewall-users")(_list_firewall_users)
+router.get("/firewall-groups")(_list_firewall_groups)
+router.post("/firewall-users", status_code=201)(_create_firewall_user)
+router.patch("/firewall-users/{username}")(_edit_firewall_user)
+router.delete("/firewall-users/{username}")(_delete_firewall_user)
+router.patch("/firewall-users/{username}/toggle")(_toggle_firewall_user_status)
+api_router.get("/firewall-users")(_list_firewall_users)
+api_router.get("/firewall-groups")(_list_firewall_groups)
+api_router.post("/firewall-users", status_code=201)(_create_firewall_user)
+api_router.patch("/firewall-users/{username}")(_edit_firewall_user)
+api_router.delete("/firewall-users/{username}")(_delete_firewall_user)
+api_router.patch("/firewall-users/{username}/toggle")(_toggle_firewall_user_status)
 
 app.include_router(router)
 app.include_router(api_router)

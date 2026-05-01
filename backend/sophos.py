@@ -182,3 +182,181 @@ class SophosAPI:
         if host_name in networks:
             networks.remove(host_name)
             self._update_rule_source_networks(rule_name, networks, rule_el)
+
+    # ── IP Host ───────────────────────────────────────────────────────────────
+
+    def add_ip_host(self, name: str, ip_type: str, ip_value: str, description: str = "") -> None:
+        n = saxutils.escape(name)
+        d = saxutils.escape(description)
+
+        if ip_type == "IP":
+            body = (
+                f"<Name>{n}</Name>"
+                "<IPFamily>IPv4</IPFamily>"
+                "<HostType>IP</HostType>"
+                f"<IPAddress>{saxutils.escape(ip_value)}</IPAddress>"
+                f"<Description>{d}</Description>"
+            )
+        elif ip_type == "IPRange":
+            start, _, end = ip_value.partition("-")
+            body = (
+                f"<Name>{n}</Name>"
+                "<IPFamily>IPv4</IPFamily>"
+                "<HostType>IPRange</HostType>"
+                f"<StartIPAddress>{saxutils.escape(start.strip())}</StartIPAddress>"
+                f"<EndIPAddress>{saxutils.escape(end.strip())}</EndIPAddress>"
+                f"<Description>{d}</Description>"
+            )
+        elif ip_type == "IPList":
+            ips = [ip.strip() for ip in ip_value.split(",") if ip.strip()]
+            ip_entries = "".join(f"<IPAddress>{saxutils.escape(ip)}</IPAddress>" for ip in ips)
+            body = (
+                f"<Name>{n}</Name>"
+                "<IPFamily>IPv4</IPFamily>"
+                "<HostType>IPList</HostType>"
+                f"<IPList>{ip_entries}</IPList>"
+                f"<Description>{d}</Description>"
+            )
+        else:
+            raise ValueError(f"Unknown ip_type: {ip_type}")
+
+        xml = f'<Set operation="add"><IPHost>{body}</IPHost></Set>'
+        root = self._request(xml)
+        ok, msg = self._check_status(root, "IPHost")
+        if not ok:
+            raise RuntimeError(f"Add IP host failed: {msg}")
+
+    def ip_host_exists(self, name: str) -> bool:
+        n = saxutils.escape(name)
+        xml = (
+            "<Get><IPHost>"
+            f"<Filter><key name=\"Name\" criteria=\"=\">{n}</key></Filter>"
+            "</IPHost></Get>"
+        )
+        root = self._request(xml)
+        return root.find(".//IPHost/Name") is not None
+
+    def remove_ip_host(self, name: str) -> None:
+        n = saxutils.escape(name)
+        xml = f"<Remove><IPHost><Name>{n}</Name></IPHost></Remove>"
+        root = self._request(xml)
+        ok, msg = self._check_status(root, "IPHost")
+        if not ok:
+            raise RuntimeError(f"Remove IP host failed: {msg}")
+
+    def update_ip_host(self, old_name: str, new_name: str, ip_type: str, ip_value: str, description: str = "") -> None:
+        self.remove_ip_host(old_name)
+        self.add_ip_host(new_name, ip_type, ip_value, description)
+
+    def get_ip_hosts(self, rule_name: str = "") -> list:
+        root = self._request("<Get><IPHost></IPHost></Get>")
+        enabled_names: set = set()
+        if rule_name:
+            try:
+                enabled_names = set(self.get_rule_networks(rule_name))
+            except Exception:
+                pass
+        hosts = []
+        for h in root.findall(".//IPHost"):
+            host_type = h.findtext("HostType", "")
+            if host_type not in ("IP", "IPRange", "IPList"):
+                continue
+            name = h.findtext("Name", "")
+            description = h.findtext("Description", "")
+            if host_type == "IP":
+                ip_value = h.findtext("IPAddress", "")
+            elif host_type == "IPRange":
+                start = h.findtext("StartIPAddress", "")
+                end = h.findtext("EndIPAddress", "")
+                ip_value = f"{start}-{end}"
+            else:
+                iplist_el = h.find("IPList")
+                if iplist_el is not None:
+                    ips = [n.text for n in iplist_el.findall("IPAddress") if n.text]
+                else:
+                    ips = [n.text for n in h.findall(".//IPAddress") if n.text]
+                ip_value = ", ".join(ips)
+            hosts.append({
+                "name": name,
+                "ip_type": host_type,
+                "ip_value": ip_value,
+                "description": description,
+                "is_enabled": name in enabled_names,
+            })
+        return hosts
+
+    # ── Firewall Users ────────────────────────────────────────────────────────
+
+    def get_firewall_users(self) -> list:
+        root = self._request("<Get><User></User></Get>")
+        users = []
+        for u in root.findall(".//User"):
+            email_node = u.find(".//EmailList/EmailID")
+            users.append({
+                "username": u.findtext("Username", ""),
+                "name": u.findtext("Name", ""),
+                "email": email_node.text.strip() if email_node is not None and email_node.text else "",
+                "group": u.findtext("Group", ""),
+                "status": u.findtext("Status", "Active"),
+                "description": u.findtext("Description", ""),
+            })
+        return users
+
+    def get_firewall_groups(self) -> list:
+        root = self._request("<Get><UserGroup></UserGroup></Get>")
+        return [
+            g.findtext("Name", "")
+            for g in root.findall(".//GroupDetail")
+            if g.findtext("GroupType", "") == "Normal"
+        ]
+
+    def add_firewall_user(self, username: str, name: str, password: str,
+                          email: str, group: str, description: str = "",
+                          status: str = "Active") -> None:
+        xml = (
+            '<Set operation="add"><User>'
+            f"<Username>{saxutils.escape(username)}</Username>"
+            f"<Name>{saxutils.escape(name)}</Name>"
+            f"<Password>{saxutils.escape(password)}</Password>"
+            f"<Description>{saxutils.escape(description)}</Description>"
+            "<UserType>User</UserType>"
+            f"<EmailList><EmailID>{saxutils.escape(email)}</EmailID></EmailList>"
+            f"<Group>{saxutils.escape(group)}</Group>"
+            f"<Status>{saxutils.escape(status)}</Status>"
+            "<IsEncryptedPassword>0</IsEncryptedPassword>"
+            "</User></Set>"
+        )
+        root = self._request(xml)
+        ok, msg = self._check_status(root, "User")
+        if not ok:
+            raise RuntimeError(f"Add firewall user failed: {msg}")
+
+    def update_firewall_user(self, username: str, name: str, email: str,
+                             group: str, description: str = "",
+                             status: str = "Active", password: str = "") -> None:
+        body = (
+            f"<Username>{saxutils.escape(username)}</Username>"
+            f"<Name>{saxutils.escape(name)}</Name>"
+            f"<Description>{saxutils.escape(description)}</Description>"
+            "<UserType>User</UserType>"
+            f"<EmailList><EmailID>{saxutils.escape(email)}</EmailID></EmailList>"
+            f"<Group>{saxutils.escape(group)}</Group>"
+            f"<Status>{saxutils.escape(status)}</Status>"
+        )
+        if password:
+            body += (
+                f"<Password>{saxutils.escape(password)}</Password>"
+                "<IsEncryptedPassword>0</IsEncryptedPassword>"
+            )
+        xml = f'<Set operation="update"><User>{body}</User></Set>'
+        root = self._request(xml)
+        ok, msg = self._check_status(root, "User")
+        if not ok:
+            raise RuntimeError(f"Update firewall user failed: {msg}")
+
+    def delete_firewall_user(self, username: str) -> None:
+        xml = f"<Remove><User><Username>{saxutils.escape(username)}</Username></User></Remove>"
+        root = self._request(xml)
+        ok, msg = self._check_status(root, "User")
+        if not ok:
+            raise RuntimeError(f"Delete firewall user failed: {msg}")
