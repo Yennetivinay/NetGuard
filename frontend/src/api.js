@@ -6,7 +6,7 @@ const baseURL = import.meta.env.VITE_API_URL ||
     : `http://${window.location.hostname}:8000`)
 
 const api = axios.create({ baseURL })
-
+api.defaults.headers.common['ngrok-skip-browser-warning'] = 'true'
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('ng_token')
   if (token) config.headers.Authorization = `Bearer ${token}`
