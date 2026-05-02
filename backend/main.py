@@ -9,13 +9,13 @@ from typing import List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import BackgroundTasks, FastAPI, APIRouter, Depends, HTTPException, Request
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from auth import ADMIN_EMAIL, create_jwt, get_user_for_login, hash_password, seed_users_from_env, verify_jwt
-from database import ActivityLog, Device, GROUPS, LocalUser, create_tables, get_db
+from database import ActivityLog, GROUPS, LocalUser, create_tables, get_db
 from sophos import SophosAPI, normalize_mac
 
 app = FastAPI(title="NetGuard")
@@ -122,7 +122,7 @@ def _login(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     reset_attempts(ip)
     db_user = db.query(LocalUser).filter(LocalUser.email == user["email"]).first()
-    groups = db_user.groups if db_user else "[]"
+    permissions = db_user.permissions if db_user else "{}"
     session_id = str(uuid.uuid4())
     if db_user:
         try:
@@ -140,7 +140,7 @@ def _login(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
         "email": user["email"],
         "name": user["email"].split("@")[0],
         "role": user["role"],
-        "groups": groups,
+        "permissions": permissions,
         "session_id": session_id,
     })
     log_activity(db, user["email"], "LOGIN", details=f"Logged in from {ip}")
@@ -157,9 +157,33 @@ def me(user=Depends(current_user)):
 
 
 def require_admin(user=Depends(current_user)):
-    if user.get("role") != "admin":
+    if user.get("role") not in ("admin", "superadmin"):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
+
+
+def require_superadmin(user=Depends(current_user)):
+    if user.get("role") != "superadmin":
+        raise HTTPException(status_code=403, detail="Superadmin access required")
+    return user
+
+
+def require_section(section: str, level: str = "toggle"):
+    def dep(user: dict = Depends(current_user)):
+        role = user.get("role", "")
+        if role in ("superadmin", "admin"):
+            return user
+        try:
+            perms = json.loads(user.get("permissions", "{}"))
+        except Exception:
+            perms = {}
+        perm = perms.get(section, "none")
+        if level == "toggle" and perm in ("toggle", "full"):
+            return user
+        if level == "full" and perm == "full":
+            return user
+        raise HTTPException(status_code=403, detail=f"You don't have {level} access to {section}")
+    return dep
 
 
 # ── User Management (admin only) ──────────────────────────────────────────────
@@ -168,34 +192,40 @@ class UserCreate(BaseModel):
     email: str
     password: str
     role: str = "user"
-    groups: List[str] = []
+    permissions: str = "{}"
 
 
 class UserOut(BaseModel):
     id: int
     email: str
     role: str
-    groups: str
+    permissions: str
     created_at: datetime
 
     class Config:
         from_attributes = True
 
 
+class UserUpdate(BaseModel):
+    role: str = "user"
+    permissions: str = "{}"
+
+
 def _list_users(db: Session = Depends(get_db), _=Depends(require_admin)):
     return db.query(LocalUser).order_by(LocalUser.created_at).all()
 
 
-def _create_user(data: UserCreate, db: Session = Depends(get_db), _=Depends(require_admin)):
+def _create_user(data: UserCreate, db: Session = Depends(get_db), admin=Depends(require_admin)):
     if db.query(LocalUser).filter(LocalUser.email == data.email).first():
         raise HTTPException(status_code=409, detail="Email already exists")
+    if data.role == "admin" and admin.get("role") != "superadmin":
+        raise HTTPException(status_code=403, detail="Only superadmin can create admin users")
     role = data.role if data.role in ("admin", "user") else "user"
-    valid_groups = [g for g in data.groups if g in GROUPS]
     user = LocalUser(
         email=data.email,
         password_hash=hash_password(data.password),
         role=role,
-        groups=json.dumps(valid_groups),
+        permissions=data.permissions if role == "user" else "{}",
     )
     db.add(user)
     db.commit()
@@ -203,21 +233,19 @@ def _create_user(data: UserCreate, db: Session = Depends(get_db), _=Depends(requ
     return user
 
 
-class UserUpdate(BaseModel):
-    role: str
-    groups: List[str] = []
-
-
-def _update_user(user_id: int, data: UserUpdate, db: Session = Depends(get_db), _=Depends(require_admin)):
+def _update_user(user_id: int, data: UserUpdate, db: Session = Depends(get_db), admin=Depends(require_admin)):
     user = db.query(LocalUser).filter(LocalUser.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if user.email == ADMIN_EMAIL:
         raise HTTPException(status_code=400, detail="Cannot modify the main admin account")
+    if user.role in ("admin", "superadmin") and admin.get("role") != "superadmin":
+        raise HTTPException(status_code=403, detail="Only superadmin can modify admin users")
+    if data.role == "admin" and admin.get("role") != "superadmin":
+        raise HTTPException(status_code=403, detail="Only superadmin can assign admin role")
     role = data.role if data.role in ("admin", "user") else "user"
-    valid_groups = [g for g in data.groups if g in GROUPS]
     user.role = role
-    user.groups = json.dumps(GROUPS if role == "admin" else valid_groups)
+    user.permissions = data.permissions if role == "user" else "{}"
     db.commit()
     db.refresh(user)
     return user
@@ -229,6 +257,8 @@ def _delete_user(user_id: int, db: Session = Depends(get_db), admin=Depends(requ
         raise HTTPException(status_code=404, detail="User not found")
     if user.email == ADMIN_EMAIL:
         raise HTTPException(status_code=400, detail="Cannot delete admin account")
+    if user.role in ("admin", "superadmin") and admin.get("role") != "superadmin":
+        raise HTTPException(status_code=403, detail="Only superadmin can delete admin users")
     db.delete(user)
     db.commit()
     return {"deleted": user_id}
@@ -261,14 +291,13 @@ api_router.delete("/users/{user_id}")(_delete_user)
 api_router.patch("/users/{user_id}/password")(_reset_password)
 
 
-# ── Devices ───────────────────────────────────────────────────────────────────
+# ── Devices (firewall-direct, no DB) ──────────────────────────────────────────
 
-class DeviceCreate(BaseModel):
+class MACHostCreate(BaseModel):
     name: str
     mac_address: Optional[str] = None
     mac_addresses: Optional[List[str]] = None
     description: str = ""
-    group: str = "School"
 
     @field_validator("mac_address")
     @classmethod
@@ -296,201 +325,13 @@ class DeviceCreate(BaseModel):
         return result
 
 
-class DeviceOut(BaseModel):
-    id: int
+class MACHostOut(BaseModel):
     name: str
-    mac_address: str
     mac_type: str
-    mac_addresses: str
+    mac_address: str
+    mac_addresses: List[str]
     description: str
-    group: str
     is_enabled: bool
-    sophos_synced: bool
-    sophos_host_name: str
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-@router.get("/devices", response_model=List[DeviceOut])
-def list_devices(db: Session = Depends(get_db), user=Depends(current_user)):
-    if user.get("role") == "admin":
-        return db.query(Device).order_by(Device.created_at.desc()).all()
-    # Normal user — filter by their assigned groups
-    user_groups = json.loads(user.get("groups", "[]"))
-    if not user_groups:
-        return []
-    return db.query(Device).filter(Device.group.in_(user_groups)).order_by(Device.created_at.desc()).all()
-
-
-@router.get("/groups")
-def list_groups(_=Depends(current_user)):
-    return GROUPS
-
-
-@router.post("/devices", response_model=DeviceOut, status_code=201)
-def add_device(data: DeviceCreate, db: Session = Depends(get_db), user=Depends(require_admin)):
-    is_list = bool(data.mac_addresses)
-
-    if not is_list and not data.mac_address:
-        raise HTTPException(status_code=422, detail="Provide mac_address or mac_addresses")
-
-    primary_mac = data.mac_addresses[0] if is_list else data.mac_address
-
-    if db.query(Device).filter(Device.mac_address == primary_mac).first():
-        raise HTTPException(status_code=409, detail="MAC address already registered")
-
-    try:
-        api = sophos()
-        if is_list:
-            api.add_mac_list_host(data.name, data.mac_addresses, data.description)
-        else:
-            api.add_mac_host(data.name, data.mac_address, data.description or data.name)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
-
-    group = data.group if data.group in GROUPS else GROUPS[0]
-    device = Device(
-        name=data.name,
-        mac_address=primary_mac,
-        mac_type="MACLIST" if is_list else "MACAddress",
-        mac_addresses=json.dumps(data.mac_addresses) if is_list else "[]",
-        description=data.description,
-        group=group,
-        is_enabled=False,
-        sophos_host_name=data.name,
-    )
-    db.add(device)
-    db.commit()
-    db.refresh(device)
-    log_activity(db, user["email"], "ADD_DEVICE", device_name=data.name)
-    return device
-
-
-class DeviceEdit(BaseModel):
-    name: str
-    mac_address: Optional[str] = None
-    mac_addresses: Optional[List[str]] = None
-    description: str = ""
-    group: str = "School"
-
-    @field_validator("mac_address")
-    @classmethod
-    def validate_single_mac(cls, v):
-        if v is None:
-            return v
-        try:
-            return normalize_mac(v)
-        except ValueError as e:
-            raise ValueError(str(e))
-
-    @field_validator("mac_addresses")
-    @classmethod
-    def validate_mac_list(cls, v):
-        if v is None:
-            return v
-        if len(v) < 2:
-            raise ValueError("MAC list must contain at least 2 addresses")
-        result = []
-        for mac in v:
-            try:
-                result.append(normalize_mac(mac))
-            except ValueError as e:
-                raise ValueError(str(e))
-        return result
-
-
-@router.patch("/devices/{device_id}", response_model=DeviceOut)
-def edit_device(device_id: int, data: DeviceEdit, db: Session = Depends(get_db), user=Depends(require_admin)):
-    device = db.query(Device).filter(Device.id == device_id).first()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
-
-    is_list = bool(data.mac_addresses)
-    if not is_list and not data.mac_address:
-        raise HTTPException(status_code=422, detail="Provide mac_address or mac_addresses")
-
-    new_primary_mac = data.mac_addresses[0] if is_list else data.mac_address
-    new_name = data.name.strip()
-    new_mac_type = "MACLIST" if is_list else "MACAddress"
-
-    # Check MAC conflict only if MAC actually changed
-    if new_primary_mac != device.mac_address:
-        conflict = db.query(Device).filter(Device.mac_address == new_primary_mac, Device.id != device_id).first()
-        if conflict:
-            raise HTTPException(status_code=409, detail="MAC address already registered to another device")
-
-    old_sophos_name = device.sophos_host_name
-    name_changed = new_name != old_sophos_name
-    mac_changed = new_primary_mac != device.mac_address
-
-    if name_changed or mac_changed:
-        try:
-            api = sophos()
-            # If device is enabled, remove old name from rule first
-            if device.is_enabled:
-                api.remove_from_rule(firewall_rule(), old_sophos_name)
-            # Delete old host and create new one
-            api.update_mac_host(
-                old_name=old_sophos_name,
-                new_name=new_name,
-                mac=new_primary_mac,
-                description=data.description,
-                mac_type=new_mac_type,
-                macs=data.mac_addresses,
-            )
-            # If device was enabled, add new name back to rule
-            if device.is_enabled:
-                api.add_to_rule(firewall_rule(), new_name)
-        except Exception as e:
-            traceback.print_exc()
-            raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
-
-    device.name = new_name
-    device.sophos_host_name = new_name
-    device.mac_address = new_primary_mac
-    device.mac_type = new_mac_type
-    device.mac_addresses = json.dumps(data.mac_addresses) if is_list else "[]"
-    device.description = data.description
-    device.group = data.group if data.group in GROUPS else device.group
-    db.commit()
-    db.refresh(device)
-    log_activity(db, user["email"], "EDIT_DEVICE", device_name=new_name)
-    return device
-
-
-@router.delete("/devices/{device_id}")
-def delete_device(device_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db), user=Depends(require_admin)):
-    device = db.query(Device).filter(Device.id == device_id).first()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
-
-    host_name = device.sophos_host_name
-    rule = firewall_rule()
-    api = sophos()
-
-    device_name = device.name
-    log_activity(db, user["email"], "DELETE_DEVICE", device_name=device_name)
-    db.delete(device)
-    db.commit()
-
-    def _cleanup():
-        try:
-            api.remove_from_rule(rule, host_name)
-        except Exception as e:
-            traceback.print_exc()
-            print(f"[bg] Sophos remove from rule failed for {host_name}: {e}")
-        try:
-            if api.mac_host_exists(host_name):
-                api.remove_mac_host(host_name)
-        except Exception as e:
-            traceback.print_exc()
-            print(f"[bg] Sophos remove host failed for {host_name}: {e}")
-
-    background_tasks.add_task(_cleanup)
-    return {"deleted": device_id}
 
 
 def _check_sophos_or_raise():
@@ -504,33 +345,136 @@ def _check_sophos_or_raise():
         raise HTTPException(status_code=503, detail="Firewall is not connected. Operation blocked.")
 
 
-@router.patch("/devices/{device_id}/toggle", response_model=DeviceOut)
-def toggle_device(device_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
+def _list_devices(_=Depends(require_section("devices", "toggle"))):
     _check_sophos_or_raise()
-    device = db.query(Device).filter(Device.id == device_id).first()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
+    return sophos().get_mac_hosts(firewall_rule())
 
-    new_state = not device.is_enabled
 
-    device.is_enabled = new_state
-    db.commit()
-
+def _add_device(data: MACHostCreate, db: Session = Depends(get_db), user=Depends(require_section("devices", "full"))):
+    _check_sophos_or_raise()
+    is_list = bool(data.mac_addresses)
+    if not is_list and not data.mac_address:
+        raise HTTPException(status_code=422, detail="Provide mac_address or mac_addresses")
+    api = sophos()
+    if api.mac_host_exists(data.name):
+        raise HTTPException(status_code=409, detail="MAC host name already exists on firewall")
     try:
-        if new_state:
-            sophos().add_to_rule(firewall_rule(), device.sophos_host_name)
+        if is_list:
+            api.add_mac_list_host(data.name, data.mac_addresses, data.description)
         else:
-            sophos().remove_from_rule(firewall_rule(), device.sophos_host_name)
+            api.add_mac_host(data.name, data.mac_address, data.description or data.name)
     except Exception as e:
         traceback.print_exc()
-        device.is_enabled = not new_state
-        db.commit()
-        db.refresh(device)
         raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+    log_activity(db, user["email"], "ADD_DEVICE", device_name=data.name)
+    primary = data.mac_addresses[0] if is_list else data.mac_address
+    return {
+        "name": data.name,
+        "mac_type": "MACLIST" if is_list else "MACAddress",
+        "mac_address": primary,
+        "mac_addresses": data.mac_addresses or [],
+        "description": data.description,
+        "is_enabled": False,
+    }
 
-    log_activity(db, user["email"], "TOGGLE_ON" if new_state else "TOGGLE_OFF", device_name=device.name)
-    db.refresh(device)
-    return device
+
+def _edit_device(host_name: str, data: MACHostCreate, db: Session = Depends(get_db), user=Depends(require_section("devices", "full"))):
+    _check_sophos_or_raise()
+    api = sophos()
+    if not api.mac_host_exists(host_name):
+        raise HTTPException(status_code=404, detail="MAC host not found on firewall")
+    is_list = bool(data.mac_addresses)
+    if not is_list and not data.mac_address:
+        raise HTTPException(status_code=422, detail="Provide mac_address or mac_addresses")
+    new_name = data.name.strip()
+    new_mac_type = "MACLIST" if is_list else "MACAddress"
+    new_primary = data.mac_addresses[0] if is_list else data.mac_address
+    rule = firewall_rule()
+    try:
+        networks = api.get_rule_networks(rule)
+        is_enabled = host_name in networks
+        if is_enabled:
+            api.remove_from_rule(rule, host_name)
+        api.update_mac_host(
+            old_name=host_name,
+            new_name=new_name,
+            mac=new_primary,
+            description=data.description,
+            mac_type=new_mac_type,
+            macs=data.mac_addresses,
+        )
+        if is_enabled:
+            api.add_to_rule(rule, new_name)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+    log_activity(db, user["email"], "EDIT_DEVICE", device_name=new_name)
+    return {
+        "name": new_name,
+        "mac_type": new_mac_type,
+        "mac_address": new_primary,
+        "mac_addresses": data.mac_addresses or [],
+        "description": data.description,
+        "is_enabled": is_enabled,
+    }
+
+
+def _delete_device(host_name: str, db: Session = Depends(get_db), user=Depends(require_section("devices", "full"))):
+    _check_sophos_or_raise()
+    api = sophos()
+    rule = firewall_rule()
+    try:
+        api.remove_from_rule(rule, host_name)
+    except Exception as e:
+        print(f"[delete] remove from rule: {e}")
+    try:
+        if api.mac_host_exists(host_name):
+            api.remove_mac_host(host_name)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Firewall denied removal: {e}")
+    log_activity(db, user["email"], "DELETE_DEVICE", device_name=host_name)
+    return {"deleted": host_name}
+
+
+def _toggle_device(host_name: str, db: Session = Depends(get_db), user=Depends(require_section("devices", "toggle"))):
+    _check_sophos_or_raise()
+    api = sophos()
+    rule = firewall_rule()
+    try:
+        networks = api.get_rule_networks(rule)
+        is_enabled = host_name in networks
+        new_state = not is_enabled
+        if new_state:
+            api.add_to_rule(rule, host_name)
+        else:
+            api.remove_from_rule(rule, host_name)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
+    log_activity(db, user["email"], "TOGGLE_ON" if new_state else "TOGGLE_OFF", device_name=host_name)
+    hosts = api.get_mac_hosts(rule)
+    host = next((h for h in hosts if h["name"] == host_name), None)
+    if not host:
+        raise HTTPException(status_code=404, detail="MAC host not found on firewall")
+    return host
+
+
+@router.get("/groups")
+def list_groups(_=Depends(current_user)):
+    return GROUPS
+
+
+router.get("/devices", response_model=List[MACHostOut])(_list_devices)
+router.post("/devices", response_model=MACHostOut, status_code=201)(_add_device)
+router.patch("/devices/{host_name}", response_model=MACHostOut)(_edit_device)
+router.delete("/devices/{host_name}")(_delete_device)
+router.patch("/devices/{host_name}/toggle", response_model=MACHostOut)(_toggle_device)
+api_router.get("/devices", response_model=List[MACHostOut])(_list_devices)
+api_router.post("/devices", response_model=MACHostOut, status_code=201)(_add_device)
+api_router.patch("/devices/{host_name}", response_model=MACHostOut)(_edit_device)
+api_router.delete("/devices/{host_name}")(_delete_device)
+api_router.patch("/devices/{host_name}/toggle", response_model=MACHostOut)(_toggle_device)
 
 
 @router.get("/logs")
@@ -566,12 +510,12 @@ class IPHostOut(BaseModel):
     is_enabled: bool
 
 
-def _list_ip_hosts(_=Depends(require_admin)):
+def _list_ip_hosts(_=Depends(require_section("iphosts", "toggle"))):
     _check_sophos_or_raise()
     return sophos().get_ip_hosts(firewall_rule())
 
 
-def _create_ip_host(data: IPHostCreate, db: Session = Depends(get_db), user=Depends(require_admin)):
+def _create_ip_host(data: IPHostCreate, db: Session = Depends(get_db), user=Depends(require_section("iphosts", "full"))):
     _check_sophos_or_raise()
     api = sophos()
     if api.ip_host_exists(data.name):
@@ -600,7 +544,7 @@ class IPHostEdit(BaseModel):
         return v
 
 
-def _edit_ip_host(host_name: str, data: IPHostEdit, db: Session = Depends(get_db), user=Depends(require_admin)):
+def _edit_ip_host(host_name: str, data: IPHostEdit, db: Session = Depends(get_db), user=Depends(require_section("iphosts", "full"))):
     _check_sophos_or_raise()
     api = sophos()
     if not api.ip_host_exists(host_name):
@@ -623,7 +567,7 @@ def _edit_ip_host(host_name: str, data: IPHostEdit, db: Session = Depends(get_db
             "description": data.description, "is_enabled": is_enabled}
 
 
-def _delete_ip_host(host_name: str, db: Session = Depends(get_db), user=Depends(require_admin)):
+def _delete_ip_host(host_name: str, db: Session = Depends(get_db), user=Depends(require_section("iphosts", "full"))):
     _check_sophos_or_raise()
     api = sophos()
     rule = firewall_rule()
@@ -641,7 +585,7 @@ def _delete_ip_host(host_name: str, db: Session = Depends(get_db), user=Depends(
     return {"deleted": host_name}
 
 
-def _toggle_ip_host(host_name: str, db: Session = Depends(get_db), user=Depends(require_admin)):
+def _toggle_ip_host(host_name: str, db: Session = Depends(get_db), user=Depends(require_section("iphosts", "toggle"))):
     _check_sophos_or_raise()
     api = sophos()
     rule = firewall_rule()
@@ -777,7 +721,7 @@ class FirewallUserEdit(BaseModel):
         return v
 
 
-def _list_firewall_users(_=Depends(require_admin)):
+def _list_firewall_users(_=Depends(require_section("fwusers", "toggle"))):
     try:
         return sophos().get_firewall_users()
     except Exception as e:
@@ -785,7 +729,7 @@ def _list_firewall_users(_=Depends(require_admin)):
         raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
 
 
-def _list_firewall_groups(_=Depends(require_admin)):
+def _list_firewall_groups(_=Depends(require_section("fwusers", "toggle"))):
     try:
         return sophos().get_firewall_groups()
     except Exception as e:
@@ -793,7 +737,7 @@ def _list_firewall_groups(_=Depends(require_admin)):
         raise HTTPException(status_code=502, detail=f"Sophos error: {e}")
 
 
-def _create_firewall_user(data: FirewallUserCreate, db: Session = Depends(get_db), user=Depends(require_admin)):
+def _create_firewall_user(data: FirewallUserCreate, db: Session = Depends(get_db), user=Depends(require_section("fwusers", "full"))):
     try:
         sophos().add_firewall_user(
             username=data.username.strip(),
@@ -813,7 +757,7 @@ def _create_firewall_user(data: FirewallUserCreate, db: Session = Depends(get_db
             "status": data.status, "description": data.description}
 
 
-def _edit_firewall_user(username: str, data: FirewallUserEdit, db: Session = Depends(get_db), user=Depends(require_admin)):
+def _edit_firewall_user(username: str, data: FirewallUserEdit, db: Session = Depends(get_db), user=Depends(require_section("fwusers", "full"))):
     try:
         sophos().update_firewall_user(
             username=username,
@@ -833,7 +777,7 @@ def _edit_firewall_user(username: str, data: FirewallUserEdit, db: Session = Dep
             "status": data.status, "description": data.description}
 
 
-def _delete_firewall_user(username: str, db: Session = Depends(get_db), user=Depends(require_admin)):
+def _delete_firewall_user(username: str, db: Session = Depends(get_db), user=Depends(require_section("fwusers", "full"))):
     try:
         sophos().delete_firewall_user(username)
     except Exception as e:
@@ -843,12 +787,11 @@ def _delete_firewall_user(username: str, db: Session = Depends(get_db), user=Dep
     return {"deleted": username}
 
 
-def _toggle_firewall_user_status(username: str, db: Session = Depends(get_db), user=Depends(require_admin)):
+def _toggle_firewall_user_status(username: str, db: Session = Depends(get_db), user=Depends(require_section("fwusers", "toggle"))):
     _check_sophos_or_raise()
     try:
         api = sophos()
-        users = api.get_firewall_users()
-        fw_user = next((u for u in users if u["username"] == username), None)
+        fw_user = api.get_firewall_user(username)
         if not fw_user:
             raise HTTPException(status_code=404, detail="Firewall user not found")
         new_status = "Inactive" if fw_user["status"] == "Active" else "Active"

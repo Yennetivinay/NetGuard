@@ -1,22 +1,14 @@
-import { useEffect, useState } from 'react'
-import api from '../api'
+import { useState } from 'react'
 
-export default function EditFirewallUserModal({ fwUser, onSave, onClose }) {
+export default function EditFirewallUserModal({ fwUser, onSave, onClose, fwGroups = [] }) {
   const [name, setName] = useState(fwUser.name || '')
   const [email, setEmail] = useState(fwUser.email || '')
   const [password, setPassword] = useState('')
   const [group, setGroup] = useState(fwUser.group || '')
   const [description, setDescription] = useState(fwUser.description || '')
   const [status, setStatus] = useState(fwUser.status || 'Active')
-  const [groups, setGroups] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-
-  useEffect(() => {
-    api.get('/firewall-groups').then(({ data }) => {
-      setGroups(data)
-    }).catch(() => {})
-  }, [])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -85,9 +77,9 @@ export default function EditFirewallUserModal({ fwUser, onSave, onClose }) {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Group</label>
-              {groups.length > 0 ? (
+              {fwGroups.length > 0 ? (
                 <div className="grid grid-cols-2 gap-2">
-                  {groups.map((g) => (
+                  {fwGroups.map((g) => (
                     <button key={g} type="button" onClick={() => setGroup(g)}
                       className={`py-2 text-sm font-medium rounded-lg border transition-all ${
                         group === g ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:border-blue-400'

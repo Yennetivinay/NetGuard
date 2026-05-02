@@ -1,90 +1,96 @@
-# Running NetGuard (new machine setup)
-
-These instructions assume you have this repo on your machine at `netguard/`.
+# Running NetGuard
 
 ## Prerequisites
 
-- **Python**: 3.10+ recommended (must be on PATH)
-- **Node.js**: 18+ recommended (includes `npm`)
+- **Python 3.11** (required — 3.14 hangs on SQLAlchemy import)
+- **Node.js 18+** (includes `npm`)
 
 Verify:
 
-```bash
-python --version
+```powershell
+python3.11 --version
 node --version
 npm --version
 ```
 
 ## 1) Backend setup (FastAPI)
 
-1. Create your environment file:
-
-   - Copy `backend/.env.example` to `backend/.env`
-   - Fill in values (Sophos + Google OAuth + JWT secret + frontend URL)
+1. Create your environment file — copy `backend/.env` and fill in:
+   - `SOPHOS_HOST`, `SOPHOS_PORT`, `SOPHOS_USERNAME`, `SOPHOS_PASSWORD`
+   - `SOPHOS_FIREWALL_RULE`
+   - `JWT_SECRET`
 
 2. Install Python dependencies:
 
-```bash
+```powershell
 cd backend
-python -m pip install -r requirements.txt
+python3.11 -m pip install -r requirements.txt
 ```
 
 3. Run the backend:
 
-```bash
+```powershell
 cd backend
-python -m uvicorn main:app --reload --port 8000
+python3.11 -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 Backend URL: `http://localhost:8000`
+
+> **Note:** Use `python3.11` explicitly — not `python`. Python 3.14 will hang on startup.
 
 ## 2) Frontend setup (Vite + React)
 
 1. Install Node dependencies:
 
-```bash
+```powershell
 cd frontend
 npm install
 ```
 
 2. Run the frontend dev server:
 
-```bash
+```powershell
 cd frontend
 npm run dev
 ```
 
 Frontend URL: `http://localhost:5173`
 
-## One-command start (Windows)
+## Running both (open two terminals)
 
-From the repo root:
-
-```bat
-start.bat
+**Terminal 1 — Backend:**
+```powershell
+cd backend; python3.11 -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-This opens two new `cmd` windows:
-- Backend: installs requirements (if needed) and starts Uvicorn on port 8000
-- Frontend: installs npm deps (if needed) and starts Vite on port 5173
+**Terminal 2 — Frontend:**
+```powershell
+cd frontend; npm run dev
+```
+
+> PowerShell uses `;` to chain commands, not `&&`.
 
 ## Common issues
 
-### “Resource busy” / can’t delete `frontend`
-
-That almost always means a dev server is still running.
-
-- Stop **Vite/Node** processes (frontend)
-- Stop **Uvicorn/Python** processes (backend)
-- Also close any File Explorer windows currently inside the folder you’re deleting
-
 ### Ports already in use
 
-If `8000` or `5173` are already taken, stop the process using the port or start on a different port.
-
-Windows quick check:
-
-```bat
-netstat -ano | findstr ":8000 :5173"
+```powershell
+netstat -ano | findstr ":8000"
+netstat -ano | findstr ":5173"
 ```
 
+Kill by PID:
+```powershell
+taskkill /PID <pid> /F
+```
+
+### Backend hangs on startup
+
+Make sure you're using `python3.11`, not `python` or `python3`. Run `python3.11 --version` to confirm.
+
+### Frontend can't reach backend
+
+The frontend auto-detects the backend URL:
+- On localhost → `http://localhost:8000`
+- On another host → `http://<hostname>:8000`
+- Override with `VITE_API_URL` in `frontend/.env.local`

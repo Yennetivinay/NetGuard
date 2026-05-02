@@ -20,14 +20,14 @@ function Toggle({ enabled, onChange, disabled }) {
   )
 }
 
-export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin, sophosConnected }) {
+export default function DeviceCard({ device, onToggle, onEdit, onDelete, canEdit, sophosConnected }) {
   const [toggling, setToggling] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   const handleToggle = async () => {
     setToggling(true)
-    await onToggle(device.id)
+    await onToggle(device.name)
     setToggling(false)
   }
 
@@ -38,25 +38,13 @@ export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin
       return
     }
     setDeleting(true)
-    await onDelete(device.id)
+    await onDelete(device.name)
     setDeleting(false)
   }
 
-  const formatMAC = (mac) => {
-    const clean = mac.replace(/[^0-9a-fA-F]/g, '')
-    return clean.match(/.{1,2}/g)?.join(':').toUpperCase() || mac.toUpperCase()
-  }
-
-  const parsedMacs = (() => {
-    try {
-      const list = JSON.parse(device.mac_addresses || '[]')
-      return Array.isArray(list) && list.length > 0 ? list : null
-    } catch { return null }
-  })()
-
-  const dateStr = new Date(device.created_at + 'Z').toLocaleDateString('en-US', {
-    month: 'short', day: 'numeric', year: 'numeric',
-  })
+  const macList = Array.isArray(device.mac_addresses) && device.mac_addresses.length > 0
+    ? device.mac_addresses
+    : null
 
   return (
     <div className={`bg-white rounded-xl border-2 p-4 shadow-sm transition-all duration-200 ${
@@ -74,16 +62,16 @@ export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin
       </div>
 
       {/* MAC display */}
-      {parsedMacs ? (
+      {macList ? (
         <div className="bg-gray-100 rounded-lg px-3 py-2 mb-3">
-          <p className="text-xs text-gray-400 mb-1 font-medium">MAC LIST ({parsedMacs.length})</p>
-          {parsedMacs.map((mac, i) => (
+          <p className="text-xs text-gray-400 mb-1 font-medium">MAC LIST ({macList.length})</p>
+          {macList.map((mac, i) => (
             <p key={i} className="font-mono text-xs text-gray-700 tracking-wider leading-5 break-all">{mac}</p>
           ))}
         </div>
       ) : (
         <div className="bg-gray-100 rounded-lg px-3 py-2 font-mono text-xs sm:text-sm text-gray-700 mb-3 tracking-wider break-all">
-          {formatMAC(device.mac_address)}
+          {device.mac_address}
         </div>
       )}
 
@@ -96,36 +84,30 @@ export default function DeviceCard({ device, onToggle, onEdit, onDelete, isAdmin
           {device.is_enabled ? 'Internet ON' : 'Internet OFF'}
         </span>
 
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400 hidden sm:inline">{dateStr}</span>
-          <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 font-medium border border-indigo-100">
-            {device.group || 'School'}
-          </span>
-          {isAdmin && (
-            <>
-              <button
-                onClick={() => sophosConnected && onEdit(device)}
-                disabled={!sophosConnected}
-                title={!sophosConnected ? 'Firewall not connected' : ''}
-                className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Edit
-              </button>
-              <button
-                onClick={handleDelete}
-                disabled={deleting || !sophosConnected}
-                title={!sophosConnected ? 'Firewall not connected' : ''}
-                className={`text-xs px-2.5 py-1.5 rounded-lg transition-colors font-medium ${
-                  confirmDelete
-                    ? 'bg-red-500 text-white hover:bg-red-600'
-                    : 'bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-500'
-                } ${(deleting || !sophosConnected) ? 'opacity-40 cursor-not-allowed' : ''}`}
-              >
-                {deleting ? '...' : confirmDelete ? 'Confirm?' : 'Delete'}
-              </button>
-            </>
-          )}
-        </div>
+        {canEdit && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => sophosConnected && onEdit(device)}
+              disabled={!sophosConnected}
+              title={!sophosConnected ? 'Firewall not connected' : ''}
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Edit
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={deleting || !sophosConnected}
+              title={!sophosConnected ? 'Firewall not connected' : ''}
+              className={`text-xs px-2.5 py-1.5 rounded-lg transition-colors font-medium ${
+                confirmDelete
+                  ? 'bg-red-500 text-white hover:bg-red-600'
+                  : 'bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-500'
+              } ${(deleting || !sophosConnected) ? 'opacity-40 cursor-not-allowed' : ''}`}
+            >
+              {deleting ? '...' : confirmDelete ? 'Confirm?' : 'Delete'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

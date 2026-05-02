@@ -1,15 +1,69 @@
 import { useEffect, useState } from 'react'
 import api from '../api'
 
-function UserRow({ u, onDelete, onResetPassword, onUpdate }) {
-  const [panel, setPanel] = useState(null) // null | 'password' | 'edit'
+const SECTIONS = [
+  { key: 'devices', label: 'MAC Devices' },
+  { key: 'iphosts', label: 'IP Hosts' },
+  { key: 'fwusers', label: 'FW Users' },
+]
+
+const LEVELS = [
+  { key: 'none', label: 'None' },
+  { key: 'toggle', label: 'Toggle' },
+  { key: 'full', label: 'Full' },
+]
+
+const DEFAULT_PERMS = { devices: 'none', iphosts: 'none', fwusers: 'none' }
+
+function parsePerms(raw) {
+  try { return { ...DEFAULT_PERMS, ...JSON.parse(raw || '{}') } } catch { return { ...DEFAULT_PERMS } }
+}
+
+function PermGrid({ perms, onChange }) {
+  return (
+    <div className="space-y-2">
+      {SECTIONS.map(({ key, label }) => (
+        <div key={key} className="flex items-center gap-2">
+          <span className="text-xs text-gray-600 w-24 flex-shrink-0">{label}</span>
+          <div className="flex gap-1">
+            {LEVELS.map(({ key: lk, label: ll }) => (
+              <button
+                key={lk}
+                type="button"
+                onClick={() => onChange({ ...perms, [key]: lk })}
+                className={`text-xs px-2.5 py-1 rounded-md font-medium border transition-all ${
+                  perms[key] === lk
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600'
+                }`}
+              >
+                {ll}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function permsSummary(raw) {
+  try {
+    const p = JSON.parse(raw || '{}')
+    const parts = SECTIONS
+      .map(({ key, label }) => p[key] && p[key] !== 'none' ? `${label}: ${p[key]}` : null)
+      .filter(Boolean)
+    return parts.length ? parts.join(' · ') : 'No access'
+  } catch { return 'No access' }
+}
+
+function UserRow({ u, isSuperAdmin, onDelete, onResetPassword, onUpdate }) {
+  const [panel, setPanel] = useState(null)
   const [newPassword, setNewPassword] = useState('')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
-  const [editRole, setEditRole] = useState(u.role)
-  const [editGroups, setEditGroups] = useState(() => {
-    try { return JSON.parse(u.groups || '[]') } catch { return [] }
-  })
+  const [editRole, setEditRole] = useState(u.role === 'admin' || u.role === 'superadmin' ? u.role : 'user')
+  const [editPerms, setEditPerms] = useState(() => parsePerms(u.permissions))
 
   const closePanel = () => { setPanel(null); setMsg(''); setNewPassword('') }
 
@@ -35,7 +89,9 @@ function UserRow({ u, onDelete, onResetPassword, onUpdate }) {
     setSaving(true)
     setMsg('')
     try {
-      await onUpdate(u.id, { role: editRole, groups: editGroups })
+      const role = editRole === 'admin' && isSuperAdmin ? 'admin' : 'user'
+      const permissions = role === 'user' ? JSON.stringify(editPerms) : '{}'
+      await onUpdate(u.id, { role, permissions })
       setMsg('Saved')
       setTimeout(closePanel, 1000)
     } catch (err) {
@@ -45,88 +101,75 @@ function UserRow({ u, onDelete, onResetPassword, onUpdate }) {
     }
   }
 
-  const toggleGroup = (g) =>
-    setEditGroups((prev) => prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g])
+  const roleBadge = u.role === 'superadmin'
+    ? 'bg-purple-100 text-purple-700'
+    : u.role === 'admin'
+    ? 'bg-blue-100 text-blue-700'
+    : 'bg-gray-100 text-gray-500'
+
+  const roleLabel = u.role === 'superadmin' ? 'Superadmin' : u.role === 'admin' ? 'Admin' : 'User'
 
   return (
     <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-      {/* User info row */}
       <div className="flex items-center justify-between px-3 sm:px-4 py-3 gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-medium text-gray-800 truncate">{u.email}</p>
-            <span className={`text-xs px-1.5 py-0.5 rounded font-medium flex-shrink-0 ${
-              u.role === 'admin' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'
-            }`}>
-              {u.role === 'admin' ? 'Admin' : 'User'}
+            <span className={`text-xs px-1.5 py-0.5 rounded font-medium flex-shrink-0 ${roleBadge}`}>
+              {roleLabel}
             </span>
           </div>
           <p className="text-xs text-gray-400 mt-0.5">
             Added {new Date(u.created_at + 'Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-            {u.role !== 'admin' && (() => {
-              try {
-                const gs = JSON.parse(u.groups || '[]')
-                return gs.length > 0 ? ` · ${gs.join(', ')}` : ' · No groups'
-              } catch { return '' }
-            })()}
+            {u.role === 'user' && ` · ${permsSummary(u.permissions)}`}
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          <button
-            onClick={() => { setPanel(panel === 'edit' ? null : 'edit'); setMsg(''); setEditRole(u.role); setEditGroups(() => { try { return JSON.parse(u.groups || '[]') } catch { return [] } }) }}
-            className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium"
-          >
-            {panel === 'edit' ? 'Cancel' : 'Edit'}
-          </button>
-          <button
-            onClick={() => { setPanel(panel === 'password' ? null : 'password'); setMsg(''); setNewPassword('') }}
-            className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium"
-          >
-            {panel === 'password' ? 'Cancel' : 'Reset PW'}
-          </button>
-          <button
-            onClick={() => onDelete(u.id, u.email)}
-            className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-500 transition-colors font-medium"
-          >
-            Remove
-          </button>
+          {u.role !== 'superadmin' && (
+            <>
+              <button
+                onClick={() => {
+                  setPanel(panel === 'edit' ? null : 'edit')
+                  setMsg('')
+                  setEditRole(u.role === 'admin' ? 'admin' : 'user')
+                  setEditPerms(parsePerms(u.permissions))
+                }}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium"
+              >
+                {panel === 'edit' ? 'Cancel' : 'Edit'}
+              </button>
+              <button
+                onClick={() => { setPanel(panel === 'password' ? null : 'password'); setMsg(''); setNewPassword('') }}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium"
+              >
+                {panel === 'password' ? 'Cancel' : 'Reset PW'}
+              </button>
+              <button
+                onClick={() => onDelete(u.id, u.email)}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-500 transition-colors font-medium"
+              >
+                Remove
+              </button>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Edit role/groups panel */}
       {panel === 'edit' && (
         <form onSubmit={handleUpdate} className="border-t border-gray-100 px-3 sm:px-4 py-3 bg-gray-50 space-y-3">
           <p className="text-xs font-medium text-gray-600">Edit access for {u.email}</p>
           <select
             value={editRole}
-            onChange={(e) => { setEditRole(e.target.value); setEditGroups([]) }}
+            onChange={(e) => setEditRole(e.target.value)}
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
           >
-            <option value="user">Normal User — toggle only</option>
-            <option value="admin">Admin — full access</option>
+            <option value="user">User — custom permissions</option>
+            {isSuperAdmin && <option value="admin">Admin — full access</option>}
           </select>
           {editRole === 'user' && (
             <div>
-              <p className="text-xs font-medium text-gray-600 mb-1.5">Group Access</p>
-              <div className="flex gap-2">
-                {GROUPS.map((g) => (
-                  <button
-                    key={g}
-                    type="button"
-                    onClick={() => toggleGroup(g)}
-                    className={`flex-1 py-2 text-sm font-medium rounded-lg border transition-all ${
-                      editGroups.includes(g)
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'border-gray-300 text-gray-600 hover:border-blue-400'
-                    }`}
-                  >
-                    {g}
-                  </button>
-                ))}
-              </div>
-              {editGroups.length === 0 && (
-                <p className="text-xs text-amber-600 mt-1">No group selected — user will see no devices.</p>
-              )}
+              <p className="text-xs font-medium text-gray-600 mb-2">Section Permissions</p>
+              <PermGrid perms={editPerms} onChange={setEditPerms} />
             </div>
           )}
           {msg && <p className={`text-xs ${msg === 'Saved' ? 'text-green-600' : 'text-red-600'}`}>{msg}</p>}
@@ -140,7 +183,6 @@ function UserRow({ u, onDelete, onResetPassword, onUpdate }) {
         </form>
       )}
 
-      {/* Reset password panel */}
       {panel === 'password' && (
         <form onSubmit={handleReset} className="border-t border-gray-100 px-3 sm:px-4 py-3 bg-gray-50">
           <p className="text-xs font-medium text-gray-600 mb-2">Set new password for {u.email}</p>
@@ -172,19 +214,14 @@ function UserRow({ u, onDelete, onResetPassword, onUpdate }) {
   )
 }
 
-const GROUPS = ['School', 'Campus']
-
-export default function UsersModal({ onClose }) {
+export default function UsersModal({ onClose, isSuperAdmin }) {
   const [users, setUsers] = useState([])
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState('user')
-  const [selectedGroups, setSelectedGroups] = useState([])
+  const [newPerms, setNewPerms] = useState({ ...DEFAULT_PERMS })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-
-  const toggleGroup = (g) =>
-    setSelectedGroups((prev) => prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g])
 
   const fetchUsers = async () => {
     try {
@@ -203,13 +240,13 @@ export default function UsersModal({ onClose }) {
     if (!email.trim() || !password.trim()) { setError('Email and password are required.'); return }
     setLoading(true)
     try {
-      const groups = role === 'admin' ? GROUPS : selectedGroups
-      const { data } = await api.post('/users', { email: email.trim(), password, role, groups })
+      const permissions = role === 'user' ? JSON.stringify(newPerms) : '{}'
+      const { data } = await api.post('/users', { email: email.trim(), password, role, permissions })
       setUsers((u) => [...u, data])
       setEmail('')
       setPassword('')
       setRole('user')
-      setSelectedGroups([])
+      setNewPerms({ ...DEFAULT_PERMS })
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to create user')
     } finally {
@@ -271,34 +308,16 @@ export default function UsersModal({ onClose }) {
             />
             <select
               value={role}
-              onChange={(e) => { setRole(e.target.value); setSelectedGroups([]) }}
+              onChange={(e) => setRole(e.target.value)}
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
             >
-              <option value="user">Normal User — toggle only</option>
-              <option value="admin">Admin — full access</option>
+              <option value="user">User — custom permissions</option>
+              {isSuperAdmin && <option value="admin">Admin — full access</option>}
             </select>
             {role === 'user' && (
               <div>
-                <p className="text-xs font-medium text-gray-600 mb-1.5">Device Group Access</p>
-                <div className="flex gap-2">
-                  {GROUPS.map((g) => (
-                    <button
-                      key={g}
-                      type="button"
-                      onClick={() => toggleGroup(g)}
-                      className={`flex-1 py-2 text-sm font-medium rounded-lg border transition-all ${
-                        selectedGroups.includes(g)
-                          ? 'bg-blue-600 text-white border-blue-600'
-                          : 'border-gray-300 text-gray-600 hover:border-blue-400'
-                      }`}
-                    >
-                      {g}
-                    </button>
-                  ))}
-                </div>
-                {selectedGroups.length === 0 && (
-                  <p className="text-xs text-amber-600 mt-1">No group selected — user will see no devices.</p>
-                )}
+                <p className="text-xs font-medium text-gray-600 mb-2">Section Permissions</p>
+                <PermGrid perms={newPerms} onChange={setNewPerms} />
               </div>
             )}
             {error && <p className="text-red-600 text-sm">{error}</p>}
@@ -320,6 +339,7 @@ export default function UsersModal({ onClose }) {
                 <UserRow
                   key={u.id}
                   u={u}
+                  isSuperAdmin={isSuperAdmin}
                   onDelete={handleDelete}
                   onResetPassword={handleResetPassword}
                   onUpdate={handleUpdate}

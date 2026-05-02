@@ -24,7 +24,6 @@ def verify_password(password: str, stored: str) -> bool:
 
 
 def seed_users_from_env():
-    """On first run, import LOCAL_USERS from .env into the DB."""
     from database import SessionLocal, LocalUser
     raw = os.getenv("LOCAL_USERS", "")
     if not raw:
@@ -32,10 +31,9 @@ def seed_users_from_env():
     db = SessionLocal()
     try:
         if db.query(LocalUser).count() > 0:
-            # Ensure existing admin has correct role
             admin = db.query(LocalUser).filter(LocalUser.email == ADMIN_EMAIL).first()
-            if admin and admin.role != "admin":
-                admin.role = "admin"
+            if admin and admin.role != "superadmin":
+                admin.role = "superadmin"
                 db.commit()
             return
         for entry in raw.split(","):
@@ -45,7 +43,7 @@ def seed_users_from_env():
             email, password = entry.split(":", 1)
             email, password = email.strip(), password.strip()
             if email and password:
-                role = "admin" if email == ADMIN_EMAIL else "user"
+                role = "superadmin" if email == ADMIN_EMAIL else "user"
                 db.add(LocalUser(email=email, password_hash=hash_password(password), role=role))
         db.commit()
     finally:
@@ -53,14 +51,13 @@ def seed_users_from_env():
 
 
 def get_user_for_login(email: str, password: str):
-    """Returns (email, role) if credentials valid, else None."""
     from database import SessionLocal, LocalUser
     db = SessionLocal()
     try:
         user = db.query(LocalUser).filter(LocalUser.email == email).first()
         if not user or not verify_password(password, user.password_hash):
             return None
-        return {"email": user.email, "role": user.role}
+        return {"email": user.email, "role": user.role, "permissions": user.permissions or "{}"}
     finally:
         db.close()
 

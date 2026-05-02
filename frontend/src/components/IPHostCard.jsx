@@ -27,7 +27,7 @@ const TYPE_COLORS = {
   IPList: 'bg-orange-50 text-orange-700',
 }
 
-export default function IPHostCard({ host, onToggle, onEdit, onDelete, sophosConnected }) {
+export default function IPHostCard({ host, onToggle, onEdit, onDelete, canEdit, sophosConnected }) {
   const [toggling, setToggling] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -51,13 +51,12 @@ export default function IPHostCard({ host, onToggle, onEdit, onDelete, sophosCon
 
   const renderValue = () => {
     if (host.ip_type === 'IPList') {
-      const ips = host.ip_value.split(',').map((s) => s.trim()).filter(Boolean)
+      const count = host.ip_value.split(',').filter((s) => s.trim()).length
       return (
-        <div className="bg-gray-100 rounded-lg px-3 py-2 mb-3">
-          <p className="text-xs text-gray-400 mb-1 font-medium">IP LIST ({ips.length})</p>
-          {ips.map((ip, i) => (
-            <p key={i} className="font-mono text-xs text-gray-700 leading-5">{ip}</p>
-          ))}
+        <div className="bg-gray-100 rounded-lg px-3 py-2 mb-3 flex items-center gap-2">
+          <span className="text-xs font-medium text-orange-600">IP LIST</span>
+          <span className="text-xs text-gray-500">{count} address{count !== 1 ? 'es' : ''}</span>
+          <span className="text-xs text-gray-400 ml-auto">click Edit to view</span>
         </div>
       )
     }
@@ -106,28 +105,30 @@ export default function IPHostCard({ host, onToggle, onEdit, onDelete, sophosCon
           {host.is_enabled ? 'Access ON' : 'Access OFF'}
         </span>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => sophosConnected && onEdit(host)}
-            disabled={!sophosConnected}
-            title={!sophosConnected ? 'Firewall not connected' : ''}
-            className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Edit
-          </button>
-          <button
-            onClick={handleDelete}
-            disabled={deleting || !sophosConnected}
-            title={!sophosConnected ? 'Firewall not connected' : ''}
-            className={`text-xs px-2.5 py-1.5 rounded-lg transition-colors font-medium ${
-              confirmDelete
-                ? 'bg-red-500 text-white hover:bg-red-600'
-                : 'bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-500'
-            } ${(deleting || !sophosConnected) ? 'opacity-40 cursor-not-allowed' : ''}`}
-          >
-            {deleting ? '...' : confirmDelete ? 'Confirm?' : 'Delete'}
-          </button>
-        </div>
+        {canEdit && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => sophosConnected && onEdit(host)}
+              disabled={!sophosConnected}
+              title={!sophosConnected ? 'Firewall not connected' : ''}
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Edit
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={deleting || !sophosConnected}
+              title={!sophosConnected ? 'Firewall not connected' : ''}
+              className={`text-xs px-2.5 py-1.5 rounded-lg transition-colors font-medium ${
+                confirmDelete
+                  ? 'bg-red-500 text-white hover:bg-red-600'
+                  : 'bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-500'
+              } ${(deleting || !sophosConnected) ? 'opacity-40 cursor-not-allowed' : ''}`}
+            >
+              {deleting ? '...' : confirmDelete ? 'Confirm?' : 'Delete'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

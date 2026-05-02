@@ -9,7 +9,8 @@ function parseInitialState(host) {
   }
   if (host.ip_type === 'IPList') {
     const ips = host.ip_value.split(',').map((s) => s.trim()).filter(Boolean)
-    return { ipList: ips.length >= 2 ? ips : [...ips, ''], rangeStart: '', rangeEnd: '', singleIP: '' }
+    const ipList = ips.length >= 2 ? ips : ips.length === 1 ? [ips[0], ''] : ['', '']
+    return { ipList, rangeStart: '', rangeEnd: '', singleIP: '' }
   }
   return { singleIP: host.ip_value, rangeStart: '', rangeEnd: '', ipList: ['', ''] }
 }

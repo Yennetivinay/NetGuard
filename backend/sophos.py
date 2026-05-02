@@ -115,6 +115,41 @@ class SophosAPI:
         if not ok:
             raise RuntimeError(f"Remove MAC host failed: {msg}")
 
+    def get_mac_hosts(self, rule_name: str = "") -> list:
+        root = self._request("<Get><MACHost></MACHost></Get>")
+        enabled_names: set = set()
+        if rule_name:
+            try:
+                enabled_names = set(self.get_rule_networks(rule_name))
+            except Exception:
+                pass
+        hosts = []
+        for h in root.findall(".//MACHost"):
+            mac_type = h.findtext("Type", "")
+            if mac_type not in ("MACAddress", "MACLIST"):
+                continue
+            name = h.findtext("Name", "")
+            description = h.findtext("Description", "")
+            if mac_type == "MACAddress":
+                mac_address = h.findtext("MACAddress", "")
+                mac_addresses = []
+            else:
+                maclist_el = h.find("MACList")
+                if maclist_el is not None:
+                    mac_addresses = [m.text for m in maclist_el.findall("MACAddress") if m.text]
+                else:
+                    mac_addresses = []
+                mac_address = mac_addresses[0] if mac_addresses else ""
+            hosts.append({
+                "name": name,
+                "mac_type": mac_type,
+                "mac_address": mac_address,
+                "mac_addresses": mac_addresses,
+                "description": description,
+                "is_enabled": name in enabled_names,
+            })
+        return hosts
+
     # ── Firewall Rule ─────────────────────────────────────────────────────────
 
     def _get_full_rule(self, rule_name: str) -> ET.Element:
@@ -274,7 +309,11 @@ class SophosAPI:
                 if iplist_el is not None:
                     ips = [n.text for n in iplist_el.findall("IPAddress") if n.text]
                 else:
-                    ips = [n.text for n in h.findall(".//IPAddress") if n.text]
+                    raw = h.findtext("ListOfIPAddresses", "")
+                    if raw:
+                        ips = [ip.strip() for ip in raw.split(",") if ip.strip()]
+                    else:
+                        ips = [n.text for n in h.findall(".//IPAddress") if n.text]
                 ip_value = ", ".join(ips)
             hosts.append({
                 "name": name,
@@ -287,8 +326,29 @@ class SophosAPI:
 
     # ── Firewall Users ────────────────────────────────────────────────────────
 
+    def get_firewall_user(self, username: str) -> dict | None:
+        n = saxutils.escape(username)
+        xml = (
+            "<Get><User>"
+            f"<Filter><key name=\"Username\" criteria=\"=\">{n}</key></Filter>"
+            "</User></Get>"
+        )
+        root = self._request(xml, timeout=15)
+        u = root.find(".//User")
+        if u is None:
+            return None
+        email_node = u.find(".//EmailList/EmailID")
+        return {
+            "username": u.findtext("Username", ""),
+            "name": u.findtext("Name", ""),
+            "email": email_node.text.strip() if email_node is not None and email_node.text else "",
+            "group": u.findtext("Group", ""),
+            "status": u.findtext("Status", "Active"),
+            "description": u.findtext("Description", ""),
+        }
+
     def get_firewall_users(self) -> list:
-        root = self._request("<Get><User></User></Get>")
+        root = self._request("<Get><User></User></Get>", timeout=60)
         users = []
         for u in root.findall(".//User"):
             email_node = u.find(".//EmailList/EmailID")

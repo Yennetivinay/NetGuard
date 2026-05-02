@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import toast from 'react-hot-toast'
 import api from '../api'
 import DeviceCard from './DeviceCard'
@@ -12,8 +12,23 @@ import FirewallUserCard from './FirewallUserCard'
 import AddFirewallUserModal from './AddFirewallUserModal'
 import EditFirewallUserModal from './EditFirewallUserModal'
 
+/** Active/enabled first (A→Z by label), then inactive (A→Z). */
+function sortActiveFirstAlphabetical(items, { isActive, getLabel }) {
+  return [...items].sort((a, b) => {
+    const aOn = isActive(a) ? 0 : 1
+    const bOn = isActive(b) ? 0 : 1
+    if (aOn !== bOn) return aOn - bOn
+    return String(getLabel(a)).localeCompare(String(getLabel(b)), undefined, { sensitivity: 'base' })
+  })
+}
+
 export default function Dashboard({ user, onLogout }) {
-  const isAdmin = user.role === 'admin'
+  const isSuperAdmin = user.role === 'superadmin'
+  const isAdmin = user.role === 'admin' || user.role === 'superadmin'
+  const userPerms = (() => { try { return JSON.parse(user.permissions || '{}') } catch { return {} } })()
+  const canAccess = (section) => isAdmin || userPerms[section] === 'toggle' || userPerms[section] === 'full'
+  const canFull = (section) => isAdmin || userPerms[section] === 'full'
+
   const [tab, setTab] = useState('devices')
 
   // ── MAC Devices ──────────────────────────────────────────────────────────────
@@ -26,7 +41,7 @@ export default function Dashboard({ user, onLogout }) {
 
   // ── IP Hosts ─────────────────────────────────────────────────────────────────
   const [ipHosts, setIpHosts] = useState([])
-  const [ipLoading, setIpLoading] = useState(true)
+  const [ipLoading, setIpLoading] = useState(false)
   const inFlightIpIds = useRef(new Set())
   const [showAddIP, setShowAddIP] = useState(false)
   const [editIPHost, setEditIPHost] = useState(null)
@@ -34,10 +49,13 @@ export default function Dashboard({ user, onLogout }) {
 
   // ── Firewall Users ────────────────────────────────────────────────────────────
   const [fwUsers, setFwUsers] = useState([])
-  const [fwLoading, setFwLoading] = useState(true)
+  const [fwGroups, setFwGroups] = useState([])
+  const [fwLoading, setFwLoading] = useState(false)
   const [showAddFW, setShowAddFW] = useState(false)
   const [editFWUser, setEditFWUser] = useState(null)
   const [fwSearch, setFwSearch] = useState('')
+
+  const tabLoaded = useRef(new Set())
 
   // ── Shared ───────────────────────────────────────────────────────────────────
   const [showUsers, setShowUsers] = useState(false)
@@ -50,7 +68,7 @@ export default function Dashboard({ user, onLogout }) {
     try {
       const { data } = await api.get('/devices')
       setDevices((prev) =>
-        data.map((d) => inFlightIds.current.has(d.id) ? (prev.find((p) => p.id === d.id) || d) : d)
+        data.map((d) => inFlightIds.current.has(d.name) ? (prev.find((p) => p.name === d.name) || d) : d)
       )
     } catch {
       if (!silent) toast.error('Failed to load devices')
@@ -59,8 +77,9 @@ export default function Dashboard({ user, onLogout }) {
     }
   }
 
-  const fetchIPHosts = async (silent = false) => {
-    if (!isAdmin) { setIpLoading(false); return }
+  const fetchIPHosts = useCallback(async (silent = false) => {
+    if (!canAccess('iphosts')) return
+    if (!silent) setIpLoading(true)
     try {
       const { data } = await api.get('/ip-hosts')
       setIpHosts((prev) =>
@@ -71,19 +90,25 @@ export default function Dashboard({ user, onLogout }) {
     } finally {
       if (!silent) setIpLoading(false)
     }
-  }
+  }, [isAdmin])
 
-  const fetchFWUsers = async (silent = false) => {
-    if (!isAdmin) { setFwLoading(false); return }
-    try {
-      const { data } = await api.get('/firewall-users')
-      setFwUsers(data)
-    } catch {
-      if (!silent) toast.error('Failed to load firewall users')
-    } finally {
-      if (!silent) setFwLoading(false)
+  const fetchFWUsers = useCallback(async (silent = false) => {
+    if (!canAccess('fwusers')) return
+    if (!silent) setFwLoading(true)
+    const [usersResult, groupsResult] = await Promise.allSettled([
+      api.get('/firewall-users'),
+      api.get('/firewall-groups'),
+    ])
+    if (usersResult.status === 'fulfilled') {
+      setFwUsers(usersResult.value.data)
+    } else if (!silent) {
+      toast.error('Failed to load firewall users')
     }
-  }
+    if (groupsResult.status === 'fulfilled') {
+      setFwGroups(groupsResult.value.data)
+    }
+    if (!silent) setFwLoading(false)
+  }, [isAdmin])
 
   const checkSophos = async () => {
     try {
@@ -94,20 +119,34 @@ export default function Dashboard({ user, onLogout }) {
     }
   }
 
+  // On login: only load devices + sophos status
   useEffect(() => {
     fetchDevices()
-    fetchIPHosts()
-    fetchFWUsers()
     checkSophos()
-    const devicePoll = setInterval(() => fetchDevices(true), 5000)
-    const ipPoll = setInterval(() => fetchIPHosts(true), 5000)
+    tabLoaded.current.add('devices')
     const sophosPoll = setInterval(checkSophos, 30000)
-    return () => {
-      clearInterval(devicePoll)
-      clearInterval(ipPoll)
-      clearInterval(sophosPoll)
-    }
+    return () => clearInterval(sophosPoll)
   }, [])
+
+  // Lazy-load each tab on first visit, poll only the active tab
+  useEffect(() => {
+    let poll
+    if (tab === 'devices') {
+      poll = setInterval(() => fetchDevices(true), 5000)
+    } else if (tab === 'iphosts') {
+      if (!tabLoaded.current.has('iphosts')) {
+        fetchIPHosts()
+        tabLoaded.current.add('iphosts')
+      }
+      poll = setInterval(() => fetchIPHosts(true), 10000)
+    } else if (tab === 'fwusers') {
+      if (!tabLoaded.current.has('fwusers')) {
+        fetchFWUsers()
+        tabLoaded.current.add('fwusers')
+      }
+    }
+    return () => clearInterval(poll)
+  }, [tab, fetchIPHosts, fetchFWUsers])
 
   const extractError = (e, fallback) => {
     const detail = e.response?.data?.detail
@@ -131,27 +170,27 @@ export default function Dashboard({ user, onLogout }) {
     }
   }
 
-  const handleToggle = async (id) => {
-    const device = devices.find((d) => d.id === id)
+  const handleToggle = async (name) => {
+    const device = devices.find((d) => d.name === name)
     const newState = !device.is_enabled
-    inFlightIds.current.add(id)
-    setDevices((ds) => ds.map((d) => d.id === id ? { ...d, is_enabled: newState } : d))
+    inFlightIds.current.add(name)
+    setDevices((ds) => ds.map((d) => d.name === name ? { ...d, is_enabled: newState } : d))
     try {
-      const { data } = await api.patch(`/devices/${id}/toggle`)
-      setDevices((ds) => ds.map((d) => d.id === id ? data : d))
-      toast.success(data.is_enabled ? `${device.name}: Internet ON` : `${device.name}: Internet OFF`)
+      const { data } = await api.patch(`/devices/${encodeURIComponent(name)}/toggle`)
+      setDevices((ds) => ds.map((d) => d.name === name ? data : d))
+      toast.success(data.is_enabled ? `${name}: Internet ON` : `${name}: Internet OFF`)
     } catch (e) {
-      setDevices((ds) => ds.map((d) => d.id === id ? device : d))
+      setDevices((ds) => ds.map((d) => d.name === name ? device : d))
       toast.error(extractError(e, 'Toggle failed'))
     } finally {
-      inFlightIds.current.delete(id)
+      inFlightIds.current.delete(name)
     }
   }
 
-  const handleEdit = async (id, form) => {
+  const handleEdit = async (name, form) => {
     try {
-      const { data } = await api.patch(`/devices/${id}`, form)
-      setDevices((ds) => ds.map((d) => d.id === id ? data : d))
+      const { data } = await api.patch(`/devices/${encodeURIComponent(name)}`, form)
+      setDevices((ds) => ds.map((d) => d.name === name ? data : d))
       toast.success(`${data.name} updated in Sophos`)
       return null
     } catch (e) {
@@ -161,12 +200,12 @@ export default function Dashboard({ user, onLogout }) {
     }
   }
 
-  const handleDelete = async (id) => {
-    const device = devices.find((d) => d.id === id)
-    setDevices((ds) => ds.filter((d) => d.id !== id))
+  const handleDelete = async (name) => {
+    const device = devices.find((d) => d.name === name)
+    setDevices((ds) => ds.filter((d) => d.name !== name))
     try {
-      await api.delete(`/devices/${id}`)
-      toast.success(`${device.name} removed`)
+      await api.delete(`/devices/${encodeURIComponent(name)}`)
+      toast.success(`${name} removed`)
     } catch (e) {
       setDevices((ds) => [device, ...ds])
       toast.error(extractError(e, 'Delete failed'))
@@ -295,6 +334,19 @@ export default function Dashboard({ user, onLogout }) {
     return u.username.toLowerCase().includes(q) || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q) || u.group.toLowerCase().includes(q)
   })
 
+  const sortedFilteredDevices = sortActiveFirstAlphabetical(filteredDevices, {
+    isActive: (d) => !!d.is_enabled,
+    getLabel: (d) => d.name,
+  })
+  const sortedFilteredIPHosts = sortActiveFirstAlphabetical(filteredIPHosts, {
+    isActive: (h) => !!h.is_enabled,
+    getLabel: (h) => h.name,
+  })
+  const sortedFilteredFWUsers = sortActiveFirstAlphabetical(filteredFWUsers, {
+    isActive: (u) => u.status === 'Active',
+    getLabel: (u) => (u.name && u.name.trim()) || u.username || '',
+  })
+
   const enabledCount = devices.filter((d) => d.is_enabled).length
   const enabledIPCount = ipHosts.filter((h) => h.is_enabled).length
   const activeFWCount = fwUsers.filter((u) => u.status === 'Active').length
@@ -394,33 +446,39 @@ export default function Dashboard({ user, onLogout }) {
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
 
-        {/* Tabs — extra tabs only shown to admins */}
-        {isAdmin && (
+        {/* Tabs — shown based on per-user section access */}
+        {(canAccess('iphosts') || canAccess('fwusers')) && (
           <div className="flex bg-gray-100 rounded-xl p-1 mb-5 w-fit">
-            <button
-              onClick={() => setTab('devices')}
-              className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
-                tab === 'devices' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              MAC Devices
-            </button>
-            <button
-              onClick={() => setTab('iphosts')}
-              className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
-                tab === 'iphosts' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              IP Hosts
-            </button>
-            <button
-              onClick={() => setTab('fwusers')}
-              className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
-                tab === 'fwusers' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Firewall Users
-            </button>
+            {canAccess('devices') && (
+              <button
+                onClick={() => setTab('devices')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
+                  tab === 'devices' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                MAC Devices
+              </button>
+            )}
+            {canAccess('iphosts') && (
+              <button
+                onClick={() => setTab('iphosts')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
+                  tab === 'iphosts' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                IP Hosts
+              </button>
+            )}
+            {canAccess('fwusers') && (
+              <button
+                onClick={() => setTab('fwusers')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
+                  tab === 'fwusers' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Firewall Users
+              </button>
+            )}
           </div>
         )}
 
@@ -450,7 +508,7 @@ export default function Dashboard({ user, onLogout }) {
                 placeholder="Search devices..."
                 className="flex-1 border border-gray-300 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
               />
-              {isAdmin && (
+              {canFull('devices') && (
                 <button
                   onClick={() => sophosConnected && setShowAdd(true)}
                   disabled={!sophosConnected}
@@ -467,16 +525,16 @@ export default function Dashboard({ user, onLogout }) {
               <div className="flex items-center justify-center py-20">
                 <div className="animate-spin h-8 w-8 border-4 border-blue-600 border-t-transparent rounded-full" />
               </div>
-            ) : filteredDevices.length === 0 ? (
+            ) : sortedFilteredDevices.length === 0 ? (
               <div className="text-center py-20">
                 {devices.length === 0 ? (
                   <>
                     <div className="text-5xl mb-3">📡</div>
                     <h3 className="text-lg font-semibold text-gray-700">No devices yet</h3>
                     <p className="text-gray-400 mt-1 text-sm">
-                      {isAdmin ? 'Add a MAC address to get started.' : 'No devices have been added yet.'}
+                      {canFull('devices') ? 'Add a MAC address to get started.' : 'No devices have been added yet.'}
                     </p>
-                    {isAdmin && (
+                    {canFull('devices') && (
                       <button
                         onClick={() => setShowAdd(true)}
                         className="mt-4 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors"
@@ -494,14 +552,14 @@ export default function Dashboard({ user, onLogout }) {
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-                {filteredDevices.map((device) => (
+                {sortedFilteredDevices.map((device) => (
                   <DeviceCard
-                    key={device.id}
+                    key={device.name}
                     device={device}
                     onToggle={handleToggle}
                     onEdit={setEditDevice}
                     onDelete={handleDelete}
-                    isAdmin={isAdmin}
+                    canEdit={canFull('devices')}
                     sophosConnected={sophosConnected}
                   />
                 ))}
@@ -510,8 +568,8 @@ export default function Dashboard({ user, onLogout }) {
           </>
         )}
 
-        {/* ── IP Hosts Tab (admin only) ── */}
-        {tab === 'iphosts' && isAdmin && (
+        {/* ── IP Hosts Tab ── */}
+        {tab === 'iphosts' && canAccess('iphosts') && (
           <>
             <div className="grid grid-cols-3 gap-2 sm:gap-4 mb-4 sm:mb-6">
               <div className="bg-white rounded-xl border border-gray-200 p-3 sm:p-4 text-center">
@@ -536,34 +594,40 @@ export default function Dashboard({ user, onLogout }) {
                 placeholder="Search IP hosts..."
                 className="flex-1 border border-gray-300 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
               />
-              <button
-                onClick={() => sophosConnected && setShowAddIP(true)}
-                disabled={!sophosConnected}
-                title={!sophosConnected ? 'Firewall not connected' : ''}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-5 py-2 sm:py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <span className="text-lg leading-none">+</span>
-                <span className="hidden xs:inline sm:inline">Add IP Host</span>
-              </button>
+              {canFull('iphosts') && (
+                <button
+                  onClick={() => sophosConnected && setShowAddIP(true)}
+                  disabled={!sophosConnected}
+                  title={!sophosConnected ? 'Firewall not connected' : ''}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-5 py-2 sm:py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <span className="text-lg leading-none">+</span>
+                  <span className="hidden xs:inline sm:inline">Add IP Host</span>
+                </button>
+              )}
             </div>
 
             {ipLoading ? (
               <div className="flex items-center justify-center py-20">
                 <div className="animate-spin h-8 w-8 border-4 border-blue-600 border-t-transparent rounded-full" />
               </div>
-            ) : filteredIPHosts.length === 0 ? (
+            ) : sortedFilteredIPHosts.length === 0 ? (
               <div className="text-center py-20">
                 {ipHosts.length === 0 ? (
                   <>
                     <div className="text-5xl mb-3">🌐</div>
                     <h3 className="text-lg font-semibold text-gray-700">No IP hosts yet</h3>
-                    <p className="text-gray-400 mt-1 text-sm">Add an IP, IP range, or IP list to get started.</p>
-                    <button
-                      onClick={() => setShowAddIP(true)}
-                      className="mt-4 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors"
-                    >
-                      Add First IP Host
-                    </button>
+                    <p className="text-gray-400 mt-1 text-sm">
+                      {canFull('iphosts') ? 'Add an IP, IP range, or IP list to get started.' : 'No IP hosts have been added yet.'}
+                    </p>
+                    {canFull('iphosts') && (
+                      <button
+                        onClick={() => setShowAddIP(true)}
+                        className="mt-4 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors"
+                      >
+                        Add First IP Host
+                      </button>
+                    )}
                   </>
                 ) : (
                   <>
@@ -574,13 +638,14 @@ export default function Dashboard({ user, onLogout }) {
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-                {filteredIPHosts.map((host) => (
+                {sortedFilteredIPHosts.map((host) => (
                   <IPHostCard
-                    key={host.id}
+                    key={host.name}
                     host={host}
                     onToggle={handleToggleIP}
                     onEdit={setEditIPHost}
                     onDelete={handleDeleteIP}
+                    canEdit={canFull('iphosts')}
                     sophosConnected={sophosConnected}
                   />
                 ))}
@@ -589,8 +654,8 @@ export default function Dashboard({ user, onLogout }) {
           </>
         )}
 
-        {/* ── Firewall Users Tab (admin only) ── */}
-        {tab === 'fwusers' && isAdmin && (
+        {/* ── Firewall Users Tab ── */}
+        {tab === 'fwusers' && canAccess('fwusers') && (
           <>
             <div className="grid grid-cols-3 gap-2 sm:gap-4 mb-4 sm:mb-6">
               <div className="bg-white rounded-xl border border-gray-200 p-3 sm:p-4 text-center">
@@ -615,34 +680,40 @@ export default function Dashboard({ user, onLogout }) {
                 placeholder="Search by name, username, email, group..."
                 className="flex-1 border border-gray-300 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
               />
-              <button
-                onClick={() => sophosConnected && setShowAddFW(true)}
-                disabled={!sophosConnected}
-                title={!sophosConnected ? 'Firewall not connected' : ''}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-5 py-2 sm:py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <span className="text-lg leading-none">+</span>
-                <span className="hidden xs:inline sm:inline">Add User</span>
-              </button>
+              {canFull('fwusers') && (
+                <button
+                  onClick={() => sophosConnected && setShowAddFW(true)}
+                  disabled={!sophosConnected}
+                  title={!sophosConnected ? 'Firewall not connected' : ''}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-5 py-2 sm:py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <span className="text-lg leading-none">+</span>
+                  <span className="hidden xs:inline sm:inline">Add User</span>
+                </button>
+              )}
             </div>
 
             {fwLoading ? (
               <div className="flex items-center justify-center py-20">
                 <div className="animate-spin h-8 w-8 border-4 border-blue-600 border-t-transparent rounded-full" />
               </div>
-            ) : filteredFWUsers.length === 0 ? (
+            ) : sortedFilteredFWUsers.length === 0 ? (
               <div className="text-center py-20">
                 {fwUsers.length === 0 ? (
                   <>
                     <div className="text-5xl mb-3">👤</div>
                     <h3 className="text-lg font-semibold text-gray-700">No firewall users yet</h3>
-                    <p className="text-gray-400 mt-1 text-sm">Add a user to control their internet access by group.</p>
-                    <button
-                      onClick={() => setShowAddFW(true)}
-                      className="mt-4 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors"
-                    >
-                      Add First User
-                    </button>
+                    <p className="text-gray-400 mt-1 text-sm">
+                      {canFull('fwusers') ? 'Add a user to control their internet access by group.' : 'No firewall users have been added yet.'}
+                    </p>
+                    {canFull('fwusers') && (
+                      <button
+                        onClick={() => setShowAddFW(true)}
+                        className="mt-4 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors"
+                      >
+                        Add First User
+                      </button>
+                    )}
                   </>
                 ) : (
                   <>
@@ -653,13 +724,14 @@ export default function Dashboard({ user, onLogout }) {
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-                {filteredFWUsers.map((fu) => (
+                {sortedFilteredFWUsers.map((fu) => (
                   <FirewallUserCard
                     key={fu.username}
                     fwUser={fu}
                     onToggle={handleToggleFW}
                     onEdit={setEditFWUser}
                     onDelete={handleDeleteFW}
+                    canEdit={canFull('fwusers')}
                     sophosConnected={sophosConnected}
                   />
                 ))}
@@ -671,8 +743,8 @@ export default function Dashboard({ user, onLogout }) {
 
       {showAdd && <AddDeviceModal onAdd={handleAdd} onClose={() => setShowAdd(false)} />}
       {showAddIP && <AddIPHostModal onAdd={handleAddIP} onClose={() => setShowAddIP(false)} />}
-      {showAddFW && <AddFirewallUserModal onAdd={handleAddFW} onClose={() => setShowAddFW(false)} />}
-      {showUsers && <UsersModal onClose={() => setShowUsers(false)} />}
+      {showAddFW && <AddFirewallUserModal onAdd={handleAddFW} onClose={() => setShowAddFW(false)} fwGroups={fwGroups} />}
+      {showUsers && <UsersModal onClose={() => setShowUsers(false)} isSuperAdmin={isSuperAdmin} />}
 
       {showLogs && (
         <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4" onClick={() => setShowLogs(false)}>
@@ -727,6 +799,7 @@ export default function Dashboard({ user, onLogout }) {
           fwUser={editFWUser}
           onSave={handleEditFW}
           onClose={() => setEditFWUser(null)}
+          fwGroups={fwGroups}
         />
       )}
     </div>

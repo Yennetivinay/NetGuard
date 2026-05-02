@@ -2,6 +2,22 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Login from './components/Login'
 import Dashboard from './components/Dashboard'
 
+function userFromJwtPayload(payload) {
+  const perms = payload.permissions
+  const permissions =
+    typeof perms === 'string'
+      ? perms
+      : perms != null
+        ? JSON.stringify(perms)
+        : '{}'
+  return {
+    email: payload.email,
+    name: payload.name,
+    role: payload.role || 'user',
+    permissions,
+  }
+}
+
 export default function App() {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -10,7 +26,7 @@ export default function App() {
     localStorage.setItem('ng_token', token)
     try {
       const payload = JSON.parse(atob(token.split('.')[1]))
-      setUser({ email: payload.email, name: payload.name, role: payload.role || 'user' })
+      setUser(userFromJwtPayload(payload))
     } catch {
       localStorage.removeItem('ng_token')
     }
@@ -22,7 +38,7 @@ export default function App() {
       try {
         const payload = JSON.parse(atob(saved.split('.')[1]))
         if (payload.exp * 1000 > Date.now()) {
-          setUser({ email: payload.email, name: payload.name, role: payload.role || 'user' })
+          setUser(userFromJwtPayload(payload))
         } else {
           localStorage.removeItem('ng_token')
         }

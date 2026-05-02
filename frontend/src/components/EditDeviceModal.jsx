@@ -20,20 +20,13 @@ function MacInput({ value, onChange, onRemove, showRemove, placeholder }) {
 }
 
 export default function EditDeviceModal({ device, onSave, onClose }) {
-  const parsedMacs = (() => {
-    try {
-      const list = JSON.parse(device.mac_addresses || '[]')
-      return Array.isArray(list) && list.length >= 2 ? list : null
-    } catch { return null }
-  })()
+  const isList = Array.isArray(device.mac_addresses) && device.mac_addresses.length >= 2
 
-  const GROUPS = ['School', 'Campus']
-  const [mode, setMode] = useState(parsedMacs ? 'list' : 'single')
+  const [mode, setMode] = useState(isList ? 'list' : 'single')
   const [name, setName] = useState(device.name)
   const [description, setDescription] = useState(device.description || '')
-  const [group, setGroup] = useState(device.group || 'School')
-  const [singleMac, setSingleMac] = useState(parsedMacs ? '' : device.mac_address)
-  const [macList, setMacList] = useState(parsedMacs || ['', ''])
+  const [singleMac, setSingleMac] = useState(isList ? '' : device.mac_address)
+  const [macList, setMacList] = useState(isList ? device.mac_addresses : ['', ''])
   const [error, setError] = useState('')
 
   const addMacRow = () => setMacList((m) => [...m, ''])
@@ -45,7 +38,7 @@ export default function EditDeviceModal({ device, onSave, onClose }) {
     setError('')
     if (!name.trim()) { setError('Name is required.'); return }
 
-    let payload = { name: name.trim(), description, group }
+    let payload = { name: name.trim(), description }
     if (mode === 'single') {
       if (!singleMac.trim()) { setError('MAC address is required.'); return }
       payload.mac_address = singleMac.trim()
@@ -56,7 +49,7 @@ export default function EditDeviceModal({ device, onSave, onClose }) {
     }
 
     onClose()
-    onSave(device.id, payload)
+    onSave(device.name, payload)
   }
 
   return (
@@ -75,7 +68,7 @@ export default function EditDeviceModal({ device, onSave, onClose }) {
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none p-1">&times;</button>
           </div>
 
-<div className="flex bg-gray-100 rounded-lg p-1 mb-4 sm:mb-5">
+          <div className="flex bg-gray-100 rounded-lg p-1 mb-4 sm:mb-5">
             <button type="button" onClick={() => setMode('single')}
               className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${mode === 'single' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
               Single MAC
@@ -127,20 +120,6 @@ export default function EditDeviceModal({ device, onSave, onClose }) {
                 </button>
               </div>
             )}
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Group</label>
-              <div className="flex gap-2">
-                {GROUPS.map((g) => (
-                  <button key={g} type="button" onClick={() => setGroup(g)}
-                    className={`flex-1 py-2 text-sm font-medium rounded-lg border transition-all ${
-                      group === g ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:border-blue-400'
-                    }`}>
-                    {g}
-                  </button>
-                ))}
-              </div>
-            </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">

@@ -27,13 +27,10 @@ export default function AddDeviceModal({ onAdd, onClose }) {
   const [mode, setMode] = useState('single')
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [group, setGroup] = useState('School')
   const [singleMac, setSingleMac] = useState('')
   const [macList, setMacList] = useState(['', ''])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-
-  const GROUPS = ['School', 'Campus']
 
   const addMacRow = () => setMacList((m) => [...m, ''])
   const removeMacRow = (i) => setMacList((m) => m.filter((_, idx) => idx !== i))
@@ -44,7 +41,7 @@ export default function AddDeviceModal({ onAdd, onClose }) {
     setError('')
     if (!name.trim()) { setError('Name is required.'); return }
 
-    let payload = { name: name.trim(), description, group }
+    let payload = { name: name.trim(), description }
     if (mode === 'single') {
       if (!singleMac.trim()) { setError('MAC address is required.'); return }
       payload.mac_address = singleMac.trim()
@@ -67,7 +64,6 @@ export default function AddDeviceModal({ onAdd, onClose }) {
         className="bg-white w-full sm:rounded-2xl sm:max-w-md rounded-t-2xl shadow-2xl max-h-[92vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Drag handle for mobile */}
         <div className="flex justify-center pt-3 pb-1 sm:hidden">
           <div className="w-10 h-1 bg-gray-300 rounded-full" />
         </div>
@@ -78,7 +74,6 @@ export default function AddDeviceModal({ onAdd, onClose }) {
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none p-1">&times;</button>
           </div>
 
-          {/* Mode toggle */}
           <div className="flex bg-gray-100 rounded-lg p-1 mb-4 sm:mb-5">
             <button
               type="button"
@@ -151,20 +146,6 @@ export default function AddDeviceModal({ onAdd, onClose }) {
                 </button>
               </div>
             )}
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Group</label>
-              <div className="flex gap-2">
-                {GROUPS.map((g) => (
-                  <button key={g} type="button" onClick={() => setGroup(g)}
-                    className={`flex-1 py-2 text-sm font-medium rounded-lg border transition-all ${
-                      group === g ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:border-blue-400'
-                    }`}>
-                    {g}
-                  </button>
-                ))}
-              </div>
-            </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
